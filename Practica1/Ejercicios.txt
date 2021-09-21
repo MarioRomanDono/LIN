@@ -1,0 +1,11 @@
+1. Si consultamos el fichero de log con dmesg, los mensajes con nivel KERN_ALERT aparecen con el fondo resaltado en rojo.
+
+2. Aparece el siguiente mensaje: "insmod: ERROR: could not insert module mi_modulo.ko: Operation not permitted".
+
+3. Los argumentos se envían a la hora de invocar a insmod. Por ejemplo, si se ha especificado una variable denominada myInt, se puede invocar como "sudo insmod <nombreModulo> myInt=5".
+
+4. /usr/sbin/insmod es un enlace simbólico a /bin/kmod. Se pueden ver los módulos cargados mediante la orden "kmod list".
+
+5. 
+
+
