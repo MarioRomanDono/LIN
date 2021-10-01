@@ -38,12 +38,12 @@ static void *mylist_seq_next(struct seq_file *f, void *v, loff_t *pos)
   (*pos)++;
   if (*pos >= lista_contador)
     return NULL;
-  return v->next;
+  return nodo->next;
 }
 
 static int show_modlist(struct seq_file *f, void *v) {
   struct list_item *item = NULL;
-  struct list_head *head cur_node = v;
+  struct list_head *cur_node = v;
 
   item = list_entry(cur_node, struct list_item, links);
   seq_printf(f, "%d\n", item->data);
@@ -61,14 +61,6 @@ static struct seq_operations modlist_seq_ops = {
 static int modlist_open(struct inode *inode, struct file *filp) {
   return seq_open(filp, &modlist_seq_ops);
 }
-
-static const struct proc_ops proc_entry_fops = {
-    .open = modlist_open,
-    .read_iter = seq_read_iter,
-    .llseek = seq_lseek,
-    .release = seq_release,
-    .write = modlist_write,    
-};
 
 static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t len, loff_t *off) {
   int available_space = BUFFER_LENGTH-1;
@@ -128,6 +120,14 @@ static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t l
   
   return len;
 }
+
+static const struct proc_ops proc_entry_fops = {
+    .proc_open = modlist_open,
+    .proc_read_iter = seq_read_iter,
+    .proc_lseek = seq_lseek,
+    .proc_release = seq_release,
+    .proc_write = modlist_write,    
+};
 
 /* static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, loff_t *off) {
   char kbuf[BUFFER_LENGTH];
