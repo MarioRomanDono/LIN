@@ -97,6 +97,7 @@ static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t l
     struct list_item* item = vmalloc( sizeof( struct list_item) );
     item->data = numero;
     list_add_tail(&item->links, &mylist);
+    ++lista_contador;
   } 
   else if (sscanf(kbuf, "remove %d", &numero) == 1){
     struct list_head *pos, *e;
@@ -106,8 +107,9 @@ static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t l
     
     item = list_entry(pos, struct list_item, links);
     if (item->data== numero){
-    list_del(pos);
-    vfree(item);
+      list_del(pos);
+      vfree(item);
+      --lista_contador;
     }
     
     }
@@ -121,6 +123,7 @@ static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t l
       list_del(pos);
       vfree(item);
     }
+    lista_contador = 0;
   }
   
   return len;
