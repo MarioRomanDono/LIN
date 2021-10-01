@@ -1,0 +1,1 @@
+cmd_/home/kernel/LIN/Practica1/modlist/Opcional1/modlist.ko := ld -r -m elf_x86_64  --build-id=sha1  -T scripts/module.lds -o /home/kernel/LIN/Practica1/modlist/Opcional1/modlist.ko /home/kernel/LIN/Practica1/modlist/Opcional1/modlist.o /home/kernel/LIN/Practica1/modlist/Opcional1/modlist.mod.o;  true

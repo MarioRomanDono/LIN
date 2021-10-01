@@ -14,17 +14,19 @@ MODULE_LICENSE("GPL");
 static struct proc_dir_entry* proc_entry;
 struct list_head mylist; /* Lista enlazada */
 
+ 
+
 /* Nodos de la lista */
 struct list_item {
     #ifdef PARTE_OPCIONAL
-        char* data;
-    #else
+        char *data;
+#else
         int data;
-    #endif  
+#endif
     struct list_head links;
 };
 
-void cleanup() {
+void cleanup(void) {
     struct list_head* pos, * e;
     struct list_item* item = NULL;
 
@@ -39,69 +41,65 @@ void cleanup() {
 
 }
 
-void scanString(char * kbuf) {
-    char pal[BUFFER_LENGTH];
-
-    if (sscanf(kbuf, "add %256s", &pal) == 1) {
-        struct list_item* item = vmalloc(sizeof(struct list_item));
-        int tamano = stnlen(pal);
+#ifdef PARTE_OPCIONAL
+void addString(char * pal) {
+	struct list_item* item = vmalloc(sizeof(struct list_item));
+        int tamano = strlen(pal);
         item->data = vmalloc(sizeof(char) * tamano);
         strcpy(item->data, pal);
         list_add_tail(&item->links, &mylist);
-    }
-    else if (sscanf(kbuf, "remove %256s", &pal) == 1) {
-        struct list_head* pos, * e;
+}
+
+void removeString(char * pal) {
+	struct list_head* pos, * e;
         struct list_item* item = NULL;
 
         list_for_each_safe(pos, e, &mylist) {
-
             item = list_entry(pos, struct list_item, links);
-            if (strcmp(item->data, pal)) {
-                vfree(item->data);
-                list_del(pos);
-                vfree(item);
+            if (strcmp(item->data, pal) == 0) {
+                list_del(pos);  
+		vfree(item->data);
+		vfree(item);              
             }
 
         }
-    }
-    else if (strcmp(kbuf, "cleanup\0")) {
-        cleanup();
-    }
 }
 
-void scanInt(char* kbuf) {
-    int numero;
-
-    if (sscanf(kbuf, "add %d", &numero) == 1) {
-        struct list_item* item = vmalloc(sizeof(struct list_item));
-        item->data = pal;
+#else
+void addInt(int numero) {
+	struct list_item* item = vmalloc(sizeof(struct list_item));
+        item->data = numero;
         list_add_tail(&item->links, &mylist);
-    }
-    else if (sscanf(kbuf, "remove %d", &numero) == 1) {
-        struct list_head* pos, * e;
+}
+
+
+
+void removeInt(int numero) {
+	struct list_head* pos, * e;
         struct list_item* item = NULL;
 
         list_for_each_safe(pos, e, &mylist) {
 
             item = list_entry(pos, struct list_item, links);
-            if (item->data == pal) {
+            if (item->data == numero) {
                 list_del(pos);
                 vfree(item);
             }
 
         }
-    }
-    else if (strcmp(kbuf, "cleanup\0")) {
-        cleanup();
-    }
+
 }
+#endif
 
 static ssize_t modlist_write(struct file* filp, const char __user* buf, size_t len, loff_t* off) {
 
     int available_space = BUFFER_LENGTH - 1;
-    char* pal;
-    int p;
     char kbuf[BUFFER_LENGTH];
+#ifdef PARTE_OPCIONAL
+	char pal[BUFFER_LENGTH];
+#else
+	int numero;
+#endif
 
     if ((*off) > 0) /* The application can write in this entry just once !! */
         return 0;
@@ -121,9 +119,25 @@ static ssize_t modlist_write(struct file* filp, const char __user* buf, size_t l
     *off += len;
    
     #ifdef PARTE_OPCIONAL
-        scanString(kbuf);
+        if (sscanf(kbuf, "add %s", pal) == 1) {
+        	addString(pal);
+    	}
+	else if (sscanf(kbuf, "remove %s", pal) == 1) {
+		removeString(pal);
+	}
+	else if (strcmp(kbuf, "cleanup\0")) {
+		cleanup();
+	}
     #else
-        scanInt(kbuf);
+        if (sscanf(kbuf, "add %d", &numero) == 1) {
+        	addInt(numero);
+    	}
+    	else if (sscanf(kbuf, "remove %d", &numero) == 1) {
+        	removeInt(numero);
+	}
+	else if (strcmp(kbuf, "cleanup\0")) {
+		cleanup();
+	}
     #endif
     return len;
 }
