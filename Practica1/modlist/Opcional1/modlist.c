@@ -42,14 +42,14 @@ void cleanup() {
 void scanString(char * kbuf) {
     char pal[BUFFER_LENGTH];
 
-    if (sscanf(kbuf, "add %s", &pal) == 1) {
+    if (sscanf(kbuf, "add %256s", &pal) == 1) {
         struct list_item* item = vmalloc(sizeof(struct list_item));
         int tamano = stnlen(pal);
         item->data = vmalloc(sizeof(char) * tamano);
         strcpy(item->data, pal);
         list_add_tail(&item->links, &mylist);
     }
-    else if (sscanf(kbuf, "remove %s", &pal) == 1) {
+    else if (sscanf(kbuf, "remove %256s", &pal) == 1) {
         struct list_head* pos, * e;
         struct list_item* item = NULL;
 
