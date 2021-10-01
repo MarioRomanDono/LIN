@@ -41,7 +41,7 @@ static void cleanup(void) {
 
 #ifdef PARTE_OPCIONAL
 static void addString(char * pal) {
-	struct list_item* item = vmalloc(sizeof(struct list_item));
+    struct list_item* item = vmalloc(sizeof(struct list_item));
     int tamano = strlen(pal);
     item->data = vmalloc(sizeof(char) * tamano);
     strcpy(item->data, pal);
@@ -51,7 +51,7 @@ static void addString(char * pal) {
 }
 
 static void removeString(char * pal) {
-	struct list_head* pos, * e;
+    struct list_head* pos, * e;
     struct list_item* item = NULL;
 
     list_for_each_safe(pos, e, &mylist) {
@@ -67,14 +67,14 @@ static void removeString(char * pal) {
 
 #else
 void addInt(int numero) {
-	struct list_item* item = vmalloc(sizeof(struct list_item));
+    struct list_item* item = vmalloc(sizeof(struct list_item));
     item->data = numero;
     list_add_tail(&item->links, &mylist);
     printk(KERN_INFO "modlist: Elemento %d agregado\n", numero);
 }
 
 static void removeInt(int numero) {
-	struct list_head* pos, * e;
+    struct list_head* pos, * e;
     struct list_item* item = NULL;
 
     list_for_each_safe(pos, e, &mylist) {
