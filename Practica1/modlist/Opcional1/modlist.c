@@ -12,9 +12,7 @@ MODULE_LICENSE("GPL");
 #define BUFFER_LENGTH 256
 
 static struct proc_dir_entry* proc_entry;
-struct list_head mylist; /* Lista enlazada */
-
- 
+static struct list_head mylist; /* Lista enlazada */
 
 /* Nodos de la lista */
 struct list_item {
@@ -26,7 +24,7 @@ struct list_item {
     struct list_head links;
 };
 
-void cleanup(void) {
+static void cleanup(void) {
     struct list_head* pos, * e;
     struct list_item* item = NULL;
 
@@ -38,56 +36,55 @@ void cleanup(void) {
         list_del(pos);
         vfree(item);
     }
-
+    printk(KERN_INFO "modlist: Lista vaciada\n");
 }
 
 #ifdef PARTE_OPCIONAL
-void addString(char * pal) {
+static void addString(char * pal) {
 	struct list_item* item = vmalloc(sizeof(struct list_item));
-        int tamano = strlen(pal);
-        item->data = vmalloc(sizeof(char) * tamano);
-        strcpy(item->data, pal);
-        list_add_tail(&item->links, &mylist);
+    int tamano = strlen(pal);
+    item->data = vmalloc(sizeof(char) * tamano);
+    strcpy(item->data, pal);
+    list_add_tail(&item->links, &mylist);
+    printk(KERN_INFO "modlist: Elemento %s agregado\n", pal);
+
 }
 
-void removeString(char * pal) {
+static void removeString(char * pal) {
 	struct list_head* pos, * e;
-        struct list_item* item = NULL;
+    struct list_item* item = NULL;
 
-        list_for_each_safe(pos, e, &mylist) {
-            item = list_entry(pos, struct list_item, links);
-            if (strcmp(item->data, pal) == 0) {
-                list_del(pos);  
-		vfree(item->data);
-		vfree(item);              
-            }
-
+    list_for_each_safe(pos, e, &mylist) {
+        item = list_entry(pos, struct list_item, links);
+        if (strcmp(item->data, pal) == 0) {
+            list_del(pos);  
+            vfree(item->data);
+            vfree(item);
+            printk(KERN_INFO "modlist: Elemento %s borrado\n", pal);
         }
+    }
 }
 
 #else
 void addInt(int numero) {
 	struct list_item* item = vmalloc(sizeof(struct list_item));
-        item->data = numero;
-        list_add_tail(&item->links, &mylist);
+    item->data = numero;
+    list_add_tail(&item->links, &mylist);
+    printk(KERN_INFO "modlist: Elemento %d agregado\n", numero);
 }
 
-
-
-void removeInt(int numero) {
+static void removeInt(int numero) {
 	struct list_head* pos, * e;
-        struct list_item* item = NULL;
+    struct list_item* item = NULL;
 
-        list_for_each_safe(pos, e, &mylist) {
-
-            item = list_entry(pos, struct list_item, links);
-            if (item->data == numero) {
-                list_del(pos);
-                vfree(item);
-            }
-
+    list_for_each_safe(pos, e, &mylist) {
+        item = list_entry(pos, struct list_item, links);
+        if (item->data == numero) {
+            list_del(pos);
+            vfree(item);
+            printk(KERN_INFO "modlist: Elemento %d borrado\n", numero);
         }
-
+    }
 }
 #endif
 
@@ -95,12 +92,11 @@ static ssize_t modlist_write(struct file* filp, const char __user* buf, size_t l
 
     int available_space = BUFFER_LENGTH - 1;
     char kbuf[BUFFER_LENGTH];
-#ifdef PARTE_OPCIONAL
-	char pal[BUFFER_LENGTH];
-#else
-	int numero;
-#endif
-
+    #ifdef PARTE_OPCIONAL
+        char pal[BUFFER_LENGTH];
+    #else
+        int numero;
+    #endif
     if ((*off) > 0) /* The application can write in this entry just once !! */
         return 0;
 
@@ -109,11 +105,9 @@ static ssize_t modlist_write(struct file* filp, const char __user* buf, size_t l
         return -ENOSPC;
     }
 
-
     if (copy_from_user(&kbuf[0], buf, len)) {
         return -EFAULT;
     }
-
 
     kbuf[len] = '\0'; /* Add the `\0' */
     *off += len;
@@ -122,22 +116,28 @@ static ssize_t modlist_write(struct file* filp, const char __user* buf, size_t l
         if (sscanf(kbuf, "add %s", pal) == 1) {
         	addString(pal);
     	}
-	else if (sscanf(kbuf, "remove %s", pal) == 1) {
-		removeString(pal);
-	}
-	else if (strcmp(kbuf, "cleanup\0")) {
-		cleanup();
-	}
+	    else if (sscanf(kbuf, "remove %s", pal) == 1) {
+		    removeString(pal);
+	    }
+	    else if (strcmp(kbuf, "cleanup\n") == 0) {
+		    cleanup();
+	    }
+        else {
+            printk(KERN_INFO "modlist: Opcion no valida\n");
+        }
     #else
         if (sscanf(kbuf, "add %d", &numero) == 1) {
         	addInt(numero);
     	}
     	else if (sscanf(kbuf, "remove %d", &numero) == 1) {
         	removeInt(numero);
-	}
-	else if (strcmp(kbuf, "cleanup\0")) {
-		cleanup();
-	}
+	    }
+	    else if (strcmp(kbuf, "cleanup\n") == 0) {
+		    cleanup();
+	    }
+        else {
+            printk(KERN_INFO "modlist: Opcion no valida\n");
+        }
     #endif
     return len;
 }

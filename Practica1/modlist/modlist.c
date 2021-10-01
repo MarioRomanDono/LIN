@@ -6,74 +6,88 @@
 #include <linux/vmalloc.h>
 #include <linux/uaccess.h>
 
-
 MODULE_LICENSE("GPL");
 
 #define BUFFER_LENGTH 256
 
 static struct proc_dir_entry *proc_entry;
-struct list_head mylist; /* Lista enlazada */
+static struct list_head mylist; /* Lista enlazada */
 
 /* Nodos de la lista */
 struct list_item {
-	int data;
-	struct list_head links;
+    int data;
+    struct list_head links;
 };
 
+static void add(int numero) {
+    struct list_item* item = vmalloc(sizeof(struct list_item));
+    item->data = numero;
+    list_add_tail(&item->links, &mylist);
+    printk(KERN_INFO "modlist: Elemento %d agregado\n", numero);
+}
+
+static void remove(int numero) {
+    struct list_head* pos, * e;
+    struct list_item* item = NULL;
+
+    list_for_each_safe(pos, e, &mylist) {
+        item = list_entry(pos, struct list_item, links);
+        if (item->data == numero) {
+            list_del(pos);
+            vfree(item);
+            printk(KERN_INFO "modlist: Elemento %d borrado\n", numero);
+        }
+    }
+}
+
+static void cleanup(void) {
+    struct list_head* pos, * e;
+    struct list_item* item = NULL;
+
+    list_for_each_safe(pos, e, &mylist) {
+        item = list_entry(pos, struct list_item, links);
+        list_del(pos);
+        vfree(item);
+    }
+    printk(KERN_INFO "modlist: Lista vaciada\n");
+}
+
 static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t len, loff_t *off) {
-	int available_space = BUFFER_LENGTH-1;
-	int numero;
-	char kbuf[BUFFER_LENGTH];
-	
-	if ((*off) > 0) /* The application can write in this entry just once !! */
-    	return 0;
+    int available_space = BUFFER_LENGTH-1;
+    int numero;
+    char kbuf[BUFFER_LENGTH];
+    
+    if ((*off) > 0) /* The application can write in this entry just once !! */
+        return 0;
   
-	  if (len > available_space) {
-	   printk(KERN_INFO "clipboard: not enough space!!\n");
-	   return -ENOSPC;
-	  }	
+      if (len > available_space) {
+       printk(KERN_INFO "clipboard: not enough space!!\n");
+       return -ENOSPC;
+      }	
 
-	
-	if (copy_from_user( &kbuf[0], buf, len ))  {
-    		return -EFAULT;	
-	}
-	
+    
+    if (copy_from_user( &kbuf[0], buf, len ))  {
+            return -EFAULT;	
+    }
+    
 
-	kbuf[len] = '\0'; /* Add the `\0' */  
-	*off+=len;  
-	
+    kbuf[len] = '\0'; /* Add the `\0' */  
+    *off+=len; 
 
-	if (sscanf(kbuf, "add %d", &numero) == 1) {
-		struct list_item* item = vmalloc( sizeof( struct list_item) );
-		item->data = numero;
-		list_add_tail(&item->links, &mylist);
-	} 
-	else if (sscanf(kbuf, "remove %d", &numero) == 1){
-		struct list_head *pos, *e;
-		struct list_item* item=NULL;
-		
-		list_for_each_safe(pos,e,&mylist){
-		
-		item = list_entry(pos, struct list_item, links);
-		if (item->data== numero){
-		list_del(pos);
-		vfree(item);
-		}
-		
-		}
-	} 
-	else if (strcmp(kbuf,"cleanup\0")) {
-		struct list_head *pos, *e;
-		struct list_item* item=NULL;
-		
-		list_for_each_safe(pos,e,&mylist){		
-			item = list_entry(pos, struct list_item, links);
-			list_del(pos);
-			vfree(item);
-		}
-	}
-	
-	return len;
+    if (sscanf(kbuf, "add %d", &numero) == 1) {
+        add(numero);
+    } 
+    else if (sscanf(kbuf, "remove %d", &numero) == 1){
+        remove(numero);
+    } 
+    else if (strcmp(kbuf,"cleanup\n") == 0) {
+        cleanup();
+    }
+    else {
+        printk(KERN_INFO "modlist: Opcion no valida\n");
+    }
+
+    return len;
 }
 
 static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, loff_t *off) {
@@ -86,8 +100,8 @@ static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, lof
       return 0;
 
   list_for_each(pos,&mylist){
-  	item = list_entry(pos, struct list_item, links);
-   	nBytes += sprintf(&kbuf[nBytes],"%d\n", item->data);
+      item = list_entry(pos, struct list_item, links);
+      nBytes += sprintf(&kbuf[nBytes],"%d\n", item->data);
   }    
     
   if (len<nBytes)
@@ -113,10 +127,10 @@ int init_modlist_module( void )
   INIT_LIST_HEAD(&mylist);
   proc_entry = proc_create( "modlist", 0666, NULL, &proc_entry_fops);
   if (proc_entry == NULL) {
-		ret = -ENOMEM;
-		printk(KERN_INFO "modlist: Can't create /proc entry\n");
+        ret = -ENOMEM;
+        printk(KERN_INFO "modlist: Can't create /proc entry\n");
   } else {
-		printk(KERN_INFO "modlist: Module loaded\n");
+        printk(KERN_INFO "modlist: Module loaded\n");
   }
   return ret;
 
@@ -125,6 +139,7 @@ int init_modlist_module( void )
 
 void exit_modlist_module( void )
 {
+  cleanup();
   remove_proc_entry("modlist", NULL);
   printk(KERN_INFO "modlist: Module unloaded.\n");
 }

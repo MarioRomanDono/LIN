@@ -13,7 +13,7 @@ MODULE_LICENSE("GPL");
 #define BUFFER_LENGTH 256
 
 static struct proc_dir_entry *proc_entry;
-struct list_head mylist; /* Lista enlazada */
+static struct list_head mylist; /* Lista enlazada */
 static int lista_contador;
 
 /* Nodos de la lista */
@@ -62,6 +62,44 @@ static int modlist_open(struct inode *inode, struct file *filp) {
   return seq_open(filp, &modlist_seq_ops);
 }
 
+static void add(int numero) {
+  struct list_item* item = vmalloc(sizeof(struct list_item));
+  item->data = numero;
+  list_add_tail(&item->links, &mylist);
+  ++lista_contador;
+  printk(KERN_INFO "modlist: Elemento %d agregado\n", numero);
+}
+
+
+
+static void remove(int numero) {
+  struct list_head* pos, * e;
+  struct list_item* item = NULL;
+
+  list_for_each_safe(pos, e, &mylist) {
+      item = list_entry(pos, struct list_item, links);
+      if (item->data == numero) {
+          list_del(pos);
+          vfree(item);
+          --lista_contador;
+          printk(KERN_INFO "modlist: Elemento %d borrado\n", numero);
+      }
+  }
+}
+
+static void cleanup(void) {
+    struct list_head* pos, * e;
+    struct list_item* item = NULL;
+
+    list_for_each_safe(pos, e, &mylist) {
+        item = list_entry(pos, struct list_item, links);
+        list_del(pos);
+        vfree(item);
+    }
+    printk(KERN_INFO "modlist: Lista vaciada\n");
+    lista_contador = 0;
+}
+
 static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t len, loff_t *off) {
   int available_space = BUFFER_LENGTH-1;
   int numero;
@@ -84,38 +122,17 @@ static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t l
   kbuf[len] = '\0'; /* Add the `\0' */  
   *off+=len;  
   
-
   if (sscanf(kbuf, "add %d", &numero) == 1) {
-    struct list_item* item = vmalloc( sizeof( struct list_item) );
-    item->data = numero;
-    list_add_tail(&item->links, &mylist);
-    ++lista_contador;
+    add(numero);
   } 
   else if (sscanf(kbuf, "remove %d", &numero) == 1){
-    struct list_head *pos, *e;
-    struct list_item* item=NULL;
-    
-    list_for_each_safe(pos,e,&mylist){
-    
-    item = list_entry(pos, struct list_item, links);
-    if (item->data== numero){
-      list_del(pos);
-      vfree(item);
-      --lista_contador;
-    }
-    
-    }
+    remove(numero);
   } 
-  else if (strcmp(kbuf,"cleanup\0")) {
-    struct list_head *pos, *e;
-    struct list_item* item=NULL;
-    
-    list_for_each_safe(pos,e,&mylist){    
-      item = list_entry(pos, struct list_item, links);
-      list_del(pos);
-      vfree(item);
-    }
-    lista_contador = 0;
+  else if (strcmp(kbuf,"cleanup\n") == 0) {
+    cleanup();
+  }
+  else {
+    printk(KERN_INFO "modlist: Opcion no valida\n");
   }
   
   return len;
@@ -128,32 +145,6 @@ static const struct proc_ops proc_entry_fops = {
     .proc_release = seq_release,
     .proc_write = modlist_write,    
 };
-
-/* static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, loff_t *off) {
-  char kbuf[BUFFER_LENGTH];
-  int nBytes = 0;
-  struct list_head *pos;
-  struct list_item* item=NULL;
-  
-  if ((*off) > 0) /* Tell the application that there is nothing left to read 
-      return 0;
-
-  list_for_each(pos,&mylist){
-    item = list_entry(pos, struct list_item, links);
-    nBytes += sprintf(&kbuf[nBytes],"%d\n", item->data);
-  }    
-    
-  if (len<nBytes)
-    return -ENOSPC;
-  
-    // Transfer data from the kernel to userspace   
-  if (copy_to_user(buf, kbuf,nBytes))
-    return -EINVAL;
-    
-  (*off)+=len;  // Update the file pointer 
-
-  return nBytes; 
-} */
 
 int init_modlist_module( void )
 {
@@ -174,6 +165,7 @@ int init_modlist_module( void )
 
 void exit_modlist_module( void )
 {
+  cleanup();
   remove_proc_entry("modlist", NULL);
   printk(KERN_INFO "modlist: Module unloaded.\n");
 }

@@ -1,1 +1,0 @@
-cmd_/home/kernel/LIN/Practica1/modlist/Opcional1/modules.order := {   echo /home/kernel/LIN/Practica1/modlist/Opcional1/modlist.ko; :; } | awk '!x[$$0]++' - > /home/kernel/LIN/Practica1/modlist/Opcional1/modules.order
