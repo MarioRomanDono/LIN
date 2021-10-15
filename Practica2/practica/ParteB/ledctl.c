@@ -23,7 +23,7 @@ SYSCALL_DEFINE1(ledctl, unsigned int, mask)
    
    unsigned int leds = 0;
 
-   if (mask < 0x0) {
+   if (mask < 0x0 || mask > 0x7) {
       return -EINVAL;
    }
 
