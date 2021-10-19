@@ -132,9 +132,9 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	message[0]='\x05';
 	message[1]=0x00;
 	message[2]=0; 
-	message[3]=((color>>16) & 0xff);
- 	message[4]=((color>>8) & 0xff);
- 	message[5]=(color & 0xff);
+	message[3]=0x11;  //((color>>16) & 0xff);
+ 	message[4]=0x11;  //((color>>8) & 0xff);
+ 	message[5]=0;  //(color & 0xff);
 
 
 	for (i=0;i<NR_LEDS;i++){
