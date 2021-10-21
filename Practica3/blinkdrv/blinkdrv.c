@@ -106,22 +106,20 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 {
 	struct usb_blink *dev=file->private_data;
 	int retval = 0;
-	int i=0;
 	unsigned char* message;
-	static int color_cnt=0;
-	unsigned int color;
 	char* kbuf = vmalloc(sizeof(char) * len);
 	char* cadena;
 	int ledn;
 	char* color;
 	int index = 0;
+	int i;
 
 	message=kmalloc(NR_BYTES_BLINK_MSG * NR_LEDS,GFP_DMA);
 
 	if ((*off) > 0) /* The application can write in this entry just once !! */
     return 0;
     
-  if (copy_from_user( &kbuf[0], buf, len ))  {
+  if (copy_from_user( &kbuf[0], user_buffer, len ))  {
           return -EFAULT;	
   }
 
@@ -130,7 +128,7 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	/* zero fill*/
 	memset(message,0,NR_BYTES_BLINK_MSG * NR_LEDS);
 
-	for (int i = 0; i < NR_LEDS * NR_BYTES_BLINK_MSG - 1; i = i + 6) {
+	for (i = 0; i < NR_LEDS * NR_BYTES_BLINK_MSG - 1; i = i + 6) {
 		message[i]='\x05';
 		message[i + 1]=0x00;
 		message[i + 2]= i / 6;
@@ -139,13 +137,17 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 		message[i + 5]=0x00;
 	}
 
-	while((cadena = strsep(&kbuf, ',') != NULL) {
-		sscanf("%d:%s", &ledn, &color);
-		index = ledn
+	while((cadena = strsep(&kbuf, ",")) != NULL) {
+		sscanf(cadena, "%d:%s", &ledn, color);
+		if (ledn < 0 || ledn > 7) {
+			printk(KERN_ALERT "Led number must be greater or equal to 0 and less than 8");
+			retval = -EINVAL;
+		}
+		index = (ledn * 6) + 2;
 		message[index++]=ledn;
-		message[index++]=strcat(color[2], color[3]);  
-		message[index++]=strcat(color[4], color[5]);  
-		message[index++]=strcat(color[6], color[7]);
+		message[index++]=strcat(&color[2], &color[3]);  
+		message[index++]=strcat(&color[4], &color[5]);  
+		message[index++]=strcat(&color[6], &color[7]);
 	}
 
 
@@ -174,12 +176,14 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	}
 
 	kfree(message);
+	kfree(kbuf);
 	(*off)+=len;
 	return len;
 
 out_error:
 	kfree(message);
-	return retval;	
+	kfree(kbuf);
+	return retval;
 }
 
 
