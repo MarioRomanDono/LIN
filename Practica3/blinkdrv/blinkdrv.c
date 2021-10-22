@@ -140,26 +140,28 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 		message[i + 5]=0x00;
 	}
 
-	while((cadena = strsep(&kbuf, ",")) != NULL) {
-		sscanf(cadena, "%d:%x", &ledn, &hexColor);
-		if (ledn < 0 || ledn > 7) {
-			printk(KERN_ALERT "Led number must be greater or equal to 0 and less than 8");
-			retval = -EINVAL;
+	if (strlen(kbuf) > 1) {
+		while((cadena = strsep(&kbuf, ",")) != NULL) {
+			sscanf(cadena, "%d:%x", &ledn, &hexColor);
+			if (ledn < 0 || ledn > 7) {
+				printk(KERN_ALERT "Led number must be greater or equal to 0 and less than 8");
+				retval = -EINVAL;
+				goto out_error;
+			}
+			index = (ledn * 6) + 2;
+			message[index++]=ledn;
+
+			/* Color rojo */
+			message[index++] = (hexColor>>16) & 0xff;
+
+			/* Color verde */
+			message[index++] = (hexColor>>8) & 0xff;
+
+			/* Color azul */
+			message[index++] = hexColor & 0xff;
+
 		}
-		index = (ledn * 6) + 2;
-		message[index++]=ledn;
-
-		/* Color rojo */
-		message[index++] = (hexColor>>16) & 0xff;
-
-		/* Color verde */
-		message[index++] = (hexColor>>8) & 0xff;
-
-		/* Color azul */
-		message[index++] = hexColor & 0xff;
-
-	}
-
+	}	
 
 	for (i=0;i<NR_LEDS;i++){
 	
