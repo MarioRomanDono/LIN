@@ -21,6 +21,7 @@
 #include <linux/usb.h>
 #include <linux/mutex.h>
 #include <linux/vmalloc.h>
+#include <linux/string.h>
 
 MODULE_LICENSE("GPL");
 
@@ -107,20 +108,22 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	struct usb_blink *dev=file->private_data;
 	int retval = 0;
 	unsigned char* message;
-	char* kbuf = vmalloc(sizeof(char) * len);
+	char* kbuf;
 	char* cadena;
-	int ledn;
-	char* color;
+	int ledn, i;
+	unsigned int hexColor;
 	int index = 0;
-	int i;
-
-	message=kmalloc(NR_BYTES_BLINK_MSG * NR_LEDS,GFP_DMA);
 
 	if ((*off) > 0) /* The application can write in this entry just once !! */
     return 0;
+
+  message= kmalloc(NR_BYTES_BLINK_MSG * NR_LEDS,GFP_DMA);
+  kbuf = vmalloc(sizeof(char) * len);
     
   if (copy_from_user( &kbuf[0], user_buffer, len ))  {
-          return -EFAULT;	
+          printk(KERN_ALERT "Error while copying buffer to kernel space");
+          retval = -EFAULT;
+          goto out_error;
   }
 
   kbuf[len] = '\0'; /* Add the `\0' */  
@@ -138,16 +141,23 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	}
 
 	while((cadena = strsep(&kbuf, ",")) != NULL) {
-		sscanf(cadena, "%d:%s", &ledn, color);
+		sscanf(cadena, "%d:%x", &ledn, &hexColor);
 		if (ledn < 0 || ledn > 7) {
 			printk(KERN_ALERT "Led number must be greater or equal to 0 and less than 8");
 			retval = -EINVAL;
 		}
 		index = (ledn * 6) + 2;
 		message[index++]=ledn;
-		message[index++]=strcat(&color[2], &color[3]);  
-		message[index++]=strcat(&color[4], &color[5]);  
-		message[index++]=strcat(&color[6], &color[7]);
+
+		/* Color rojo */
+		message[index++] = (hexColor>>16) & 0xff;
+
+		/* Color verde */
+		message[index++] = (hexColor>>8) & 0xff;
+
+		/* Color azul */
+		message[index++] = hexColor & 0xff;
+
 	}
 
 
