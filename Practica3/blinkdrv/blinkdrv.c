@@ -99,6 +99,7 @@ static int blink_release(struct inode *inode, struct file *file)
 
 #define NR_LEDS 8
 #define NR_BYTES_BLINK_MSG 6
+#define BUFFER_SIZE 100
 
 
 /* Called when a user program invokes the write() system call on the device */
@@ -108,9 +109,10 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	struct usb_blink *dev=file->private_data;
 	int retval = 0;
 	unsigned char* message;
-	char* kbuf;
-	char* cadena;
-	int ledn, i;
+	char kbuf[BUFFER_SIZE];
+	char * cadena;
+	char * aux;
+	int ledn, i, size;
 	unsigned int hexColor;
 	int index = 0;
 
@@ -118,15 +120,16 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
     return 0;
 
   message= kmalloc(NR_BYTES_BLINK_MSG * NR_LEDS,GFP_DMA);
-  kbuf = vmalloc(sizeof(char) * len);
+  size = (BUFFER_SIZE < len) ? BUFFER_SIZE : len;
     
-  if (copy_from_user( kbuf, user_buffer, len ))  {
+  if (copy_from_user( kbuf, user_buffer, size ))  {
           printk(KERN_ALERT "Error while copying buffer to kernel space");
           retval = -EFAULT;
           goto out_error;
   }
 
-  kbuf[len] = '\0'; /* Add the `\0' */  
+  kbuf[len] = '\0'; /* Add the `\0' */
+  aux = kbuf;
 
 	/* zero fill*/
 	memset(message,0,NR_BYTES_BLINK_MSG * NR_LEDS);
@@ -140,8 +143,8 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 		message[i + 5]=0x00;
 	}
 
-	if (strlen(kbuf) > 1) { // Solo se procesa si no es vacío
-		while((cadena = strsep(&kbuf, ",")) != NULL) {
+	if (size > 1) { // Solo se procesa si no es vacío
+		while((cadena = strsep(&aux, ",")) != NULL) {
 			if ( sscanf(cadena, "%d:%x", &ledn, &hexColor) < 2 ) {
 				printk(KERN_ALERT "Invalid format");
 				retval = -EINVAL;
@@ -192,13 +195,11 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	}
 
 	kfree(message);
-	kfree(kbuf);
 	(*off)+=len;
 	return len;
 
 out_error:
 	kfree(message);
-	kfree(kbuf);
 	return retval;
 }
 
