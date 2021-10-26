@@ -21,7 +21,6 @@
 #include <linux/usb.h>
 #include <linux/mutex.h>
 #include <linux/vmalloc.h>
-#include <linux/string.h>
 
 MODULE_LICENSE("GPL");
 
@@ -101,73 +100,46 @@ static int blink_release(struct inode *inode, struct file *file)
 #define NR_BYTES_BLINK_MSG 6
 
 
+
+#define NR_SAMPLE_COLORS 4
+
+unsigned int sample_colors[]={0x000011, 0x110000, 0x001100, 0x000000};
+
 /* Called when a user program invokes the write() system call on the device */
 static ssize_t blink_write(struct file *file, const char *user_buffer,
 			  size_t len, loff_t *off)
 {
 	struct usb_blink *dev=file->private_data;
 	int retval = 0;
+	int i=0;
 	unsigned char* message;
-	char* kbuf;
-	char* cadena;
-	int ledn, i;
-	unsigned int hexColor;
-	int index = 0;
+	static int color_cnt=0;
+	unsigned int color;
 
-	if ((*off) > 0) /* The application can write in this entry just once !! */
-    return 0;
+	message=kmalloc(NR_BYTES_BLINK_MSG,GFP_DMA);
+	
+	/* Pick a color and get ready for the next invocation*/		
+	color=sample_colors[color_cnt++];
 
-  message= kmalloc(NR_BYTES_BLINK_MSG * NR_LEDS,GFP_DMA);
-  kbuf = vmalloc(sizeof(char) * len);
-    
-  if (copy_from_user( kbuf, user_buffer, len ))  {
-          printk(KERN_ALERT "Error while copying buffer to kernel space");
-          retval = -EFAULT;
-          goto out_error;
-  }
-
-  kbuf[len] = '\0'; /* Add the `\0' */  
-
+	/* Reset the color counter if necessary */	
+	if (color_cnt == NR_SAMPLE_COLORS)
+		color_cnt=0;
+	
 	/* zero fill*/
-	memset(message,0,NR_BYTES_BLINK_MSG * NR_LEDS);
+	memset(message,0,NR_BYTES_BLINK_MSG);
 
-	for (i = 0; i < NR_LEDS * NR_BYTES_BLINK_MSG - 1; i = i + 6) {
-		message[i]='\x05';
-		message[i + 1]=0x00;
-		message[i + 2]= i / 6;
-		message[i + 3]=0x00; 
-		message[i + 4]=0x00;
-		message[i + 5]=0x00;
-	}
+	/* Fill up the message accordingly */
+	message[0]='\x05';
+	message[1]=0x00;
+	message[2]=0; 
+	message[3]=((color>>16) & 0xff);
+ 	message[4]=((color>>8) & 0xff);
+ 	message[5]=(color & 0xff);
 
-	if (strlen(kbuf) > 1) { // Solo se procesa si no es vacío
-		while((cadena = strsep(&kbuf, ",")) != NULL) {
-			if ( sscanf(cadena, "%d:%x", &ledn, &hexColor) < 2 ) {
-				printk(KERN_ALERT "Invalid format");
-				retval = -EINVAL;
-				goto out_error;
-			}
-			if (ledn < 0 || ledn > 7) {
-				printk(KERN_ALERT "Led number must be greater or equal to 0 and less than 8");
-				retval = -EINVAL;
-				goto out_error;
-			}
-			index = (ledn * 6) + 2;
-			message[index++]=ledn;
-
-			/* Color rojo */
-			message[index++] = (hexColor>>16) & 0xff;
-
-			/* Color verde */
-			message[index++] = (hexColor>>8) & 0xff;
-
-			/* Color azul */
-			message[index++] = hexColor & 0xff;
-
-		}
-	}
 
 	for (i=0;i<NR_LEDS;i++){
+
+		message[2]=i; /* Change Led number in message */
 	
 		/* 
 		 * Send message (URB) to the Blinkstick device 
@@ -183,8 +155,6 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 			 NR_BYTES_BLINK_MSG, /* message's size in bytes */
 			 0);		
 
-		message += NR_BYTES_BLINK_MSG;
-
 		if (retval<0){
 			printk(KERN_ALERT "Executed with retval=%d\n",retval);
 			goto out_error;		
@@ -192,14 +162,12 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	}
 
 	kfree(message);
-	kfree(kbuf);
 	(*off)+=len;
 	return len;
 
 out_error:
 	kfree(message);
-	kfree(kbuf);
-	return retval;
+	return retval;	
 }
 
 
