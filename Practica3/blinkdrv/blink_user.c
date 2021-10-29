@@ -16,11 +16,6 @@ int escribirEnBlinkstick(char * dispositivo, char * cadena) {
 	return write(fd, cadena, strlen(cadena));
 }
 
-int error() {
-	fprintf(stderr, "Error\n");
-	return -1;
-}
-
 int secuenciaColores(unsigned int color) {
 	char ultimo_uno[90] = "";
 	char ultimo_dos[90] = "";
@@ -30,25 +25,35 @@ int secuenciaColores(unsigned int color) {
 	int led_mod = 0;
 
 	while (limite >= 0) {
+		led = 0;
 		while (led <= limite) {
 			led_mod = led % 8;
-			if (sprintf(cadena, "%d:0x%x,", led_mod, color) < 0) {
-				return error();
+			if (sprintf(cadena, "%d:0x%x", led_mod, color) < 0) {
+				perror("Error on blink_user");
+				return -1;
 			}
 
 			if (led < 8) { //Escribimos en el blinkstick 1
+				if (strlen(ultimo_uno) > 0) {
+					strcat(cadena, ",");
+				}
 				strcat(cadena, ultimo_uno);
 				if (escribirEnBlinkstick(BLINK_UNO, cadena) == -1 || escribirEnBlinkstick(BLINK_DOS, ultimo_dos) == -1) {
-					return error();
+					perror("Error on blink_user");
+					return -1;
 				}			
 			}
 			else { //Escribimos en el blinkstick 2
+				if (strlen(ultimo_dos) > 0) {
+					strcat(cadena, ",");
+				}
 				strcat(cadena, ultimo_dos);
 				if (escribirEnBlinkstick(BLINK_UNO, ultimo_uno) == -1 || escribirEnBlinkstick(BLINK_DOS, cadena) == -1) {
-					return error();
+					perror("Error on blink_user");
+					return -1;
 				}
 			}
-			sleep(0.5);
+			sleep(0.75);
 			led++;
 		}
 

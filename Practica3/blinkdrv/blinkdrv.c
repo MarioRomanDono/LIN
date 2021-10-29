@@ -112,7 +112,7 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 	char kbuf[BUFFER_SIZE];
 	char * cadena;
 	char * aux;
-	int ledn, i, size;
+	int ledn, i;
 	unsigned int hexColor;
 	int index = 0;
 
@@ -120,9 +120,8 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
     return 0;
 
   message= kmalloc(NR_BYTES_BLINK_MSG * NR_LEDS,GFP_DMA);
-  size = (BUFFER_SIZE < len) ? BUFFER_SIZE : len;
     
-  if (copy_from_user( kbuf, user_buffer, size ))  {
+  if (copy_from_user( kbuf, user_buffer, len ))  {
           printk(KERN_ALERT "Error while copying buffer to kernel space");
           retval = -EFAULT;
           goto out_error;
@@ -143,7 +142,7 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 		message[i + 5]=0x00;
 	}
 
-	if (size > 1) { // Solo se procesa si no es vacío
+	if (len > 1) { // Solo se procesa si no es vacío
 		while((cadena = strsep(&aux, ",")) != NULL) {
 			if ( sscanf(cadena, "%d:%x", &ledn, &hexColor) < 2 ) {
 				printk(KERN_ALERT "Invalid format");
@@ -182,11 +181,10 @@ static ssize_t blink_write(struct file *file, const char *user_buffer,
 			 USB_DIR_OUT| USB_TYPE_CLASS | USB_RECIP_DEVICE,
 			 0x5,	/* wValue */
 			 0, 	/* wIndex=Endpoint # */
-			 message,	/* Pointer to the message */ 
+			 &message[i*NR_BYTES_BLINK_MSG],	/* Pointer to the message */ 
 			 NR_BYTES_BLINK_MSG, /* message's size in bytes */
 			 0);		
 
-		message += NR_BYTES_BLINK_MSG;
 
 		if (retval<0){
 			printk(KERN_ALERT "Executed with retval=%d\n",retval);
