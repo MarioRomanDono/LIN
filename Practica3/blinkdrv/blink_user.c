@@ -10,10 +10,20 @@
 
 int escribirEnBlinkstick(char * dispositivo, char * cadena) {
 	int fd = open(dispositivo, O_WRONLY);
+	int res;
+
 	if (fd == -1) {
 		return -1;
 	}
-	return write(fd, cadena, strlen(cadena));
+	res = write(fd, cadena, strlen(cadena));
+	if (res == -1) {
+		return -1;
+	}
+	res = close(fd);
+	if (res == -1) {
+		return -1;
+	}
+	return 0;
 }
 
 int secuenciaColores(unsigned int color) {
@@ -23,7 +33,9 @@ int secuenciaColores(unsigned int color) {
 	int limite = 15;
 	int led = 0;
 	int led_mod = 0;
+	int i;
 
+	//Secuencia descendente
 	while (limite >= 0) {
 		led = 0;
 		while (led <= limite) {
@@ -53,16 +65,36 @@ int secuenciaColores(unsigned int color) {
 					return -1;
 				}
 			}
-			sleep(0.75);
+			usleep(50000);
 			led++;
 		}
 
-		if (led < 8) {
+		if (led <= 8) {
 			strcpy(ultimo_uno, cadena);
 		}  else  {
 			strcpy(ultimo_dos, cadena);
 		}
 		limite--;
+	}
+
+	//Parpadeo
+	for (i = 0; i < 3; i++) {
+		if (escribirEnBlinkstick(BLINK_UNO, ultimo_uno) == -1 || escribirEnBlinkstick(BLINK_DOS, ultimo_dos) == -1) {
+			perror("Error on blink_user");
+			return -1;
+		}
+		usleep(500000);
+		if (escribirEnBlinkstick(BLINK_UNO, "") == -1 || escribirEnBlinkstick(BLINK_DOS, "") == -1) {
+			perror("Error on blink_user");
+			return -1;
+		}
+		usleep(500000);
+	}
+
+	// Leds fijos
+	if (escribirEnBlinkstick(BLINK_UNO, ultimo_uno) == -1 || escribirEnBlinkstick(BLINK_DOS, ultimo_dos) == -1) {
+			perror("Error on blink_user");
+			return -1;
 	}
 	return 0;
 }
