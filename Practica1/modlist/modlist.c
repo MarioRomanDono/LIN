@@ -52,6 +52,15 @@ static void cleanup(void) {
     printk(KERN_INFO "modlist: Lista vaciada\n");
 }
 
+static int getDigits(int numero) {
+    int r = 1;
+    while (numero > 9) {
+        numero /= 10;
+        r++;
+    }
+    return r;
+}
+
 static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t len, loff_t *off) {
     int available_space = BUFFER_LENGTH-1;
     int numero;
@@ -91,17 +100,28 @@ static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t l
 }
 
 static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, loff_t *off) {
-  char kbuf[BUFFER_LENGTH];
+  char * kbuf;
   int nBytes = 0;
   struct list_head *pos;
   struct list_item* item=NULL;
+  int size = 0;
+  int leido = 0;
   
   if ((*off) > 0) /* Tell the application that there is nothing left to read */
       return 0;
 
   list_for_each(pos,&mylist){
       item = list_entry(pos, struct list_item, links);
-      nBytes += sprintf(&kbuf[nBytes],"%d\n", item->data);
+      size += getDigits(item->data) + 1;
+  }
+
+  kbuf = vmalloc(size);
+
+  list_for_each(pos,&mylist){
+      item = list_entry(pos, struct list_item, links);
+      leido = sprintf(kbuf,"%d\n", item->data);
+      kbuf += leido;
+      nBytes += leido;
   }    
     
   if (len<nBytes)
@@ -113,6 +133,7 @@ static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, lof
     
   (*off)+=len;  /* Update the file pointer */
 
+  vfree(kbuf);
   return nBytes; 
 }
 
