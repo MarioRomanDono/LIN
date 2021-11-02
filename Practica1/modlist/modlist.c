@@ -105,7 +105,6 @@ static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, lof
   struct list_head *pos;
   struct list_item* item=NULL;
   int size = 0;
-  int leido = 0;
   
   if ((*off) > 0) /* Tell the application that there is nothing left to read */
       return 0;
@@ -115,13 +114,12 @@ static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, lof
       size += getDigits(item->data) + 1;
   }
 
-  kbuf = vmalloc(size);
+  if (size > 0) // Solo se asigna espacio si la lista no está vacía, para evitar errores
+    kbuf = vmalloc(size);
 
   list_for_each(pos,&mylist){
       item = list_entry(pos, struct list_item, links);
-      leido = sprintf(kbuf,"%d\n", item->data);
-      kbuf += leido;
-      nBytes += leido;
+      nBytes += sprintf(&kbuf[nBytes],"%d\n", item->data);
   }    
     
   if (len<nBytes)
@@ -133,7 +131,9 @@ static ssize_t modlist_read(struct file *filp, char __user *buf, size_t len, lof
     
   (*off)+=len;  /* Update the file pointer */
 
-  vfree(kbuf);
+  if (size > 0) // Solo se libera si se ha hecho vmalloc, es decir, si la lista no es vacía
+    vfree(kbuf);
+
   return nBytes; 
 }
 
