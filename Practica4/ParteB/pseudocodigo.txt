@@ -1,0 +1,100 @@
+mutex mtx;
+condvar prod,cons;
+int prod_count=0,cons_count=0;
+struct kfifo cbuffer;
+
+int fifoproc_open(bool abre_para_lectura) {
+	lock(mtx);
+	if (abre_para_lectura) {
+		cons_cont++;
+
+		cond_signal(prod);
+
+		/* Esperar hasta que el productor abra su extremo de escritura */
+		while (prod_cont == 0) {
+			cond_wait(cons, mtx);
+		}
+
+		
+	}
+	else {
+		prod_cont++;
+
+		cond_signal(cons);
+
+		/* Esperar hasta que el consumidor abra su extremo de escritura */
+		while (cons_cont == 0) {
+			cond_wait(prod, mtx);
+		}
+	}
+	unlock(mtx);
+}
+
+int fifoproc_write(char* buff, int len) {
+	char kbuffer[MAX_KBUF];
+	if (len> MAX_CBUFFER_LEN || len> MAX_KBUF) { return Error;}
+	if (copy_from_user(kbuffer,buff,len)) { return Error;}
+
+	lock(mtx);
+	/* Esperar hasta que haya hueco para insertar (debe haber consumidores) */
+	while (kfifo_avail(&cbuffer)<len && cons_count>0 ){
+		cond_wait(prod,mtx);
+	}
+	/* Detectar fin de comunicación por error (consumidor cierra FIFO antes) */
+	if (cons_count==0) {unlock(mtx); return -EPIPE;}
+
+	kfifo_in(&cbuffer,kbuffer,len);
+
+	/* Despertar a posible consumidor bloqueado */
+	cond_signal(cons);
+
+	unlock(mtx);
+	return len;
+}
+
+int fifoproc_read(const char* buff, int len) {
+	char kbuffer[MAX_KBUF];
+	if (len> MAX_CBUFFER_LEN || len> MAX_KBUF) { return Error;}
+	
+	lock(mtx);
+	/* Esperar hasta que el buffer contenga más bytes que los solicitados mediante read (debe haber productores) */
+	while (kfifo_len(&cbuffer)<len && prod_count>0 ){
+		cond_wait(cons,mtx);
+	}
+	/* Detectar fin de comunicación correcto (el extremo de escritura ha sido cerrado) */
+	if (kfifo_is_empty(&cbuffer) && prod_count==0) {
+		unlock(mtx);
+		return 0;
+	}
+
+	kfifo_out(&cbuffer,kbuffer,len);
+
+	/* Despertar a posible productor bloqueado */
+	cond_signal(prod);
+
+	if (copy_to_user(kbuffer,buff,len)) {unlock(mtx); return Error;}
+
+	unlock(mtx);
+	return len;
+}
+
+
+
+void fifoproc_release(bool lectura) {
+	lock(mtx);
+
+	if (lectura) {				
+		cons_cont--;
+		cond_signal(prod);
+	}
+	else {
+		prod_cont--;	
+		cond_signal(cons);	
+	}
+
+	if (prod_cons == 0 && cons_cont == 0) {
+			kfifo_reset(&cbuffer);
+	}
+
+	unlock(mtx);
+}

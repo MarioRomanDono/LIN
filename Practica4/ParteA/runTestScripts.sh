@@ -1,3 +1,3 @@
-./script_add.sh &
-./script_removeandcat.sh &
+./script_add.sh $1 &
+./script_removeandcat.sh $1 &
 wait
