@@ -2,6 +2,7 @@
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
 #include <linux/kfifo.h>
+#include <linux/uaccess.h>
 
 MODULE_LICENSE("GPL");
 
@@ -77,22 +78,24 @@ static int fifoproc_open(struct inode * inode, struct file * file) {
 static ssize_t fifoproc_write(struct file * file, const char * buf, size_t len, loff_t * off) {
 	char kbuffer[MAX_KBUF];
 
-	if ((*off) > 0) /* The application can write in this entry just once !! */
-        return 0;
+	/* if ((*off) > 0) // The application can write in this entry just once !!
+        return 0; */
 
 	if (len> MAX_CBUFFER_LEN || len> MAX_KBUF) {
 		printk(KERN_INFO "fifoproc: not enough space!!\n");
        return -ENOSPC;
 	}
 
-	if (copy_from_user( &kbuffer[0], buf, len ))  {
+	/* if (copy_from_user( &kbuffer[0], buf, len ))  {
             return -EFAULT;	
-    }
-    
-  kbuffer[len] = '\0'; /* Add the `\0' */  
-  *off+=len;
+  }  
+  *off+=len;  */
 
-
+  if (copy_from_user( kbuffer, buf, len ))  {
+            return -EFAULT;	
+  }
+  kbuffer[len] = '\0'; //Add the `\0' 
+  
 	if (down_interruptible(&mtx)) {
 		return -EINTR;
 	}
@@ -156,7 +159,7 @@ static ssize_t fifoproc_read(struct file * file, char* buff, size_t len, loff_t 
 		return 0;
 	}
 
-	nBytes = kfifo_out(&cbuffer,kbuffer,MAX_KBUF);
+	nBytes = kfifo_out(&cbuffer,kbuffer,len);
 
 	/* Despertar a posible productor bloqueado */
 	if (nr_prod_waiting > 0) {
@@ -164,11 +167,11 @@ static ssize_t fifoproc_read(struct file * file, char* buff, size_t len, loff_t 
 		nr_prod_waiting--;
 	}
 
-	if (copy_to_user(buff,kbuffer,nBytes)) {up(&mtx); return -EFAULT;}
+	if (copy_to_user(buff,kbuffer,len)) {up(&mtx); return -EFAULT;}
 
 	up(&mtx);
-	(*off)+=len;  /* Update the file pointer */
-	return nBytes;
+	// (*off)+=len;  /* Update the file pointer */
+	return len;
 }
 
 
@@ -222,6 +225,7 @@ int init_fifoproc_module( void )
   proc_entry = proc_create( "fifoproc", 0666, NULL, &proc_entry_fops);
   if (proc_entry == NULL) {
         ret = -ENOMEM;
+        kfifo_free(&cbuffer);
         printk(KERN_INFO "fifoproc: Can't create /proc entry\n");
   } else {
         printk(KERN_INFO "fifoproc: Module loaded\n");
