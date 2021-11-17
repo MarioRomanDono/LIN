@@ -101,6 +101,7 @@ static ssize_t modlist_write(struct file *filp, const char __user *buf, size_t l
     }
     else {
         printk(KERN_INFO "modlist: Opcion no valida\n");
+        return -EINVAL;
     }
 
     return len;
