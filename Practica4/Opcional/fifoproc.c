@@ -41,6 +41,7 @@ static int fifoproc_open(struct inode * inode, struct file * file) {
 			if (down_interruptible(&sem_cons)) {
 				down(&mtx);
 				nr_cons_waiting--;
+				cons_count--;
 				up(&mtx);
 				return -EINTR;
 			}
@@ -64,6 +65,7 @@ static int fifoproc_open(struct inode * inode, struct file * file) {
 			if (down_interruptible(&sem_prod)) {
 				down(&mtx);
 				nr_prod_waiting--;
+				prod_count--;
 				up(&mtx);
 				return -EINTR;
 			}
