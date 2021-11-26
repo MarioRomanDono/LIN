@@ -1,0 +1,2 @@
+kprobe:trace_message{ printf("%s\n", str(arg0)); }
+kprobe:trace_workqueue{ printf("%s\n", str(arg0)); }
