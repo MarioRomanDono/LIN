@@ -23,17 +23,19 @@ void noinline trace_workqueue(char * message) {
 
 static void prueba(struct work_struct * wq) {
     trace_workqueue("Llamada a workqueue");
+    kfifo_reset(&cbuffer);
 }
 
 /* Function invoked when timer expires (fires) */
 static void fire_timer(struct timer_list *timer)
 {
+    int cpu_actual;
     char msg[] = "Hola";
     if (kfifo_is_full(&cbuffer)) {
-        int cpu_actual = smp_processor_id();
-        my_wq = create_workqueue("my_queue");
+        flush_workqueue(my_wq);
+        cpu_actual = smp_processor_id();
         INIT_WORK(&my_work, prueba);
-        queue_work_on(cpu_actual % 2 + 1, my_wq, &my_work); 
+        queue_work_on(!(cpu_actual & 0x1), my_wq, &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
     }
     
     kfifo_in(&cbuffer, msg, 4);
@@ -50,8 +52,12 @@ int init_timer_module( void )
         printk(KERN_INFO "Can't allocate memory to fifo\n");
         return -ENOMEM;
     }
+    /* Create workqueue*/
+    my_wq = create_workqueue("my_queue");
+
     /* Create timer */
     timer_setup(&my_timer, fire_timer, 0);
+
     my_timer.expires=jiffies + HZ;  /* Activate it one second from now */
     /* Activate the timer for the first time */
     add_timer(&my_timer); 
