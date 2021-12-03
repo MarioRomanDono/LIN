@@ -41,10 +41,36 @@ void noinline trace_code_in_list(char* random_code) { asm(" "); };
 void noinline trace_code_read(char* random_code) { asm(" "); };
 
 static char * generate_code(void) {
-    int random, i;
+    int random, i, value, shifted_bits;
     char code[codesize];
 
     random = get_random_int();
+    shifted_bits = 0;
+
+    for (i = 0; i < codesize; i++) {
+        if (code_format[i] == '0') {
+            if (shifted_bits + 4 > 32) { // Si vamos a superar los 32 bits del primer random, generamos uno nuevo
+                random = get_random_int();
+                shifted_bits = 0;
+            }
+
+            value = random & 0xF; // Para obtener un número aleatorio solo necesitamos los últimos 4 bits (entre 0 y 15)
+            code[i] = '0' + value % 10; // Si hacemos módulo 10 de esos 4 bits anteriores y se lo sumamos a 0, obtenemos un número aleatorio entre 0 y 9
+            random >>= 4; // Desplazamos el número random 4 bits para no trabajar siempre con los mismos bits
+            shifted_bits += 4;
+        }
+        else { // Letra
+            if (shifted_bits + 5 > 32) { // Si vamos a superar los 32 bits del primer random, generamos uno nuevo
+                random = get_random_int();
+                shifted_bits = 0;
+            }
+
+            value = random & 0x1F; // Para obtener una letra aleatoria solo necesitamos los últimos 5 bits (entre 0 y 31)
+            code[i] = code_format[i] + value % 25; // Si hacemos módulo 25 de esos 5 bits anteriores y se lo sumamos a 'a' o 'A', obtenemos una letra aleatoria
+            random >>= 5; // Desplazamos el número random 5 bits para no trabajar siempre con los mismos bits
+            shifted_bits += 5;
+        }
+    }
 
     return code;
 }
