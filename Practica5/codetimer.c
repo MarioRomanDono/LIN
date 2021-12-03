@@ -1,120 +1,314 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
-#include <linux/kfifo.h>
-#include <linux/uaccess.h>
+#include <linux/string.h>
 #include <linux/timer.h>
+#include <linux/kfifo.h>
 #include <linux/workqueue.h>
-
-MODULE_LICENSE("GPL");
+#include <linux/semaphore.h>
+#include <linux/spinlock.h>
 
 #define MAX_CBUFFER_LEN 32
-#define MAX_CODE_SIZE 8
+#define KBUF_SIZE 256
 
-static struct proc_dir_entry *codetimer_entry;
-static struct proc_dir_entry *codeconfig_entry;
-static struct list_head mylist; /* Lista enlazada */
+int timer_period_ms = 500;
+int emergency_threshold = 75;
+char code_format[9] = "aA00";
+int codesize = 4;
 
-/* Nodos de la lista */
+struct kfifo cbuffer;
+static struct list_head mylist;
 struct list_item {
-    char *data;
+    char * data;
     struct list_head links;
 };
 
-struct kfifo cbuffer;
-struct timer_list my_timer;
-char * code_format;
-int timer_period_ms, emergency_threshold;
-int codesize;
-
+struct timer_list my_timer; /* Structure that describes the kernel timer */
 struct work_struct my_work;
-static struct workqueue_struct* my_wq;  
+static struct workqueue_struct* my_wq; 
+static struct proc_dir_entry *codetimer_entry, *codeconfig_entry;
 
-static void add_to_buffer() {
-  /* Completar */
-  kfifo_in(&cbuffer,kbuffer,len);
+int espera = 0;
+struct semaphore queue;
+
+DEFINE_SEMAPHORE(mtx);
+DEFINE_SPINLOCK(sp);
+
+void noinline trace_code_in_buffer(char* random_code, int cur_buf_size) { asm(" "); };
+
+void noinline trace_code_in_list(char* random_code) { asm(" "); };
+
+void noinline trace_code_read(char* random_code) { asm(" "); };
+
+static char * generate_code(void) {
+    int random, i;
+    char code[codesize];
+
+    random = get_random_int();
+
+    return code;
 }
 
-static void fire_timer() {
-  timer_setup(&my_timer, add_to_buffer, 0);
-  my_timer.expires = jiffies + timer_period_ms;
-  add_timer(&my_timer);
+
+static void copy_items_into_list(struct work_struct * wq) {
+    char kbuf[MAX_CBUFFER_LEN];
+    int nBytes, aux, i, ret;
+    unsigned long flags;
+
+    spin_lock_irqsave(&sp, flags);
+    nBytes = kfifo_out(&cbuffer,kbuf,MAX_CBUFFER_LEN);
+    spin_unlock_irqrestore(&sp, flags);
+
+    aux = nBytes / codesize;
+
+    ret = down_interruptible(&mtx);
+
+    for (i = 0; i < aux; i++) {
+        struct list_item* item = vmalloc(sizeof(struct list_item));
+        item->data = vmalloc(sizeof(char) * codesize);
+        strncpy(item->data, &kbuf[i * codesize], codesize);
+
+        list_add_tail(&item->links, &mylist);
+
+        trace_code_in_list(item->data);
+    }
+
+    if (espera>0) {
+        up(&queue);
+        espera--;
+    }
+
+    up(&mtx);
 }
 
-static void copy_items_into_list() {
-  char kbuf[MAX_CBUFFER_LEN];
-  int nBytes, aux;
+/* Function invoked when timer expires (fires) */
+static void fire_timer(struct timer_list *timer)
+{
+    int cpu_actual;
+    char msg[] = "Hola";
+    if (kfifo_is_full(&cbuffer)) {
+        flush_workqueue(my_wq);
+        cpu_actual = smp_processor_id();
+        queue_work_on(!(cpu_actual & 0x1), my_wq, &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
+    }
+    
+    kfifo_in(&cbuffer, msg, codesize);
+    trace_code_in_buffer(msg, codesize);
 
-  nBytes = kfifo_out(&cbuffer,kbuf,MAX_CBUFFER_LEN);
-  aux = nBytes / codesize;
-  
-  for (int i = 0; i < aux; i++) {
-    struct list_item* item = vmalloc(sizeof(struct list_item));
-    item->data = vmalloc(sizeof(char) * codesize);
-    strncpy(item->data, kbuf[i * codesize]);
-    list_add_tail(&item->links, &mylist);
-  }
-
+    
+    /* Re-activate the timer one second from now */
+    mod_timer(timer, jiffies + HZ); 
 }
 
-static void bottom_half() {
-  int cpu_actual = smp_processor_id();
-  my_wq = create_workqueue("my_queue");
-  INIT_WORK(&my_work, copy_items_into_list);
+static int codetimer_open(struct inode * inode, struct file * file) {
+    try_module_get(THIS_MODULE);
 
-  if (!work_pending(&my_work) && ((kfifo_len(&cbuffer) / MAX_CBUFFER_LEN) * 100) < emergency_threshold) {
-    queue_work_on(cpu_actual % 2 + 1, my_wq, &my_work);    
-  }
+    INIT_LIST_HEAD(&mylist);
+
+    if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
+        printk(KERN_INFO "Can't allocate memory to fifo\n");
+        return -ENOMEM;
+    }
+
+    /* Create workqueue*/
+    my_wq = create_workqueue("my_queue");
+    INIT_WORK(&my_work, copy_items_into_list);
+
+    /* Create timer */
+    timer_setup(&my_timer, fire_timer, 0);
+
+    my_timer.expires=jiffies + HZ;  /* Activate it one second from now */
+    /* Activate the timer for the first time */
+    add_timer(&my_timer);
+
+    return 0;
+}
+
+static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, loff_t* off)  {
+    char kbuf[KBUF_SIZE];
+    int nBytes = 0;
+    struct list_head* pos, * e;
+    struct list_item* item = NULL;
+
+    if ((*off) > 0) /* Tell the application that there is nothing left to read */
+        return 0;
+
+    if (down_interruptible(&mtx)) {
+            return -EINTR;
+    }
+
+    if (list_empty(&mylist)) {
+        espera++;
+        up(&mtx);
+        if (down_interruptible(&queue)){
+            down(&mtx);
+            espera--;
+            up(&mtx);
+            return -EINTR;
+        }
+        if (down_interruptible(&mtx))
+            return -EINTR;
+    }
+
+    list_for_each_safe(pos, e, &mylist) {
+        item = list_entry(pos, struct list_item, links);
+        nBytes += sprintf(&kbuf[nBytes], "%s\n", item->data);
+        list_del(pos);
+        trace_code_read(item->data);  
+        vfree(item->data);
+        vfree(item);
+    }
+
+    up(&mtx);
+
+    if (len < nBytes)
+        return -ENOSPC;
+
+    /* Transfer data from the kernel to userspace */
+    if (copy_to_user(buf, kbuf, nBytes))
+        return -EINVAL;
+
+    (*off) += len;  /* Update the file pointer */
+
+    return nBytes;
+}
+
+static int codetimer_release(struct inode * inode, struct file * file) {
+        unsigned long flags;
+
+        del_timer_sync(&my_timer); 
+        flush_workqueue(my_wq);
+
+        spin_lock_irqsave(&sp, flags);
+        kfifo_reset(&cbuffer);
+        kfifo_free(&cbuffer);
+        spin_unlock_irqrestore(&sp, flags);
+
+        module_put(THIS_MODULE);
+
+        return 0;
+}
+
+static const struct proc_ops codetimer_entry_fops = {
+    .proc_open = codetimer_open,
+    .proc_release = codetimer_release,    
+    .proc_read = codetimer_read,
+};
+
+static ssize_t codeconfig_write(struct file* filp, const char __user* buf, size_t len, loff_t* off) {
+
+    int available_space = KBUF_SIZE - 1;
+    char kbuf[KBUF_SIZE];
+    char code[KBUF_SIZE];
+    int numero, i, size;
+
+    if ((*off) > 0) /* The application can write in this entry just once !! */
+        return 0;
+
+    if (len > available_space) {
+        printk(KERN_INFO "codeconfig: not enough space!!\n");
+        return -ENOSPC;
+    }
+
+    if (copy_from_user(&kbuf[0], buf, len)) {
+        return -EFAULT;
+    }
+
+    kbuf[len] = '\0'; /* Add the `\0' */
+    *off += len;
+   
+    if (sscanf(kbuf, "timer_period_ms %d", &numero) == 1) {
+        if (numero <= 0 ) {
+            printk(KERN_INFO "codeconfig: timer_period_ms must be greater than 0\n");
+            return -EINVAL;
+        }
+        timer_period_ms = numero;
+    }
+    else if (sscanf(kbuf, "emergency_threshold %d", &numero) == 1) {
+        if (numero <= 0 || numero > 100) {
+            printk(KERN_INFO "codeconfig: emergency_threshold must be between 1 and 100\n");
+            return -EINVAL;
+        }
+        emergency_threshold = numero;
+    }
+    else if (sscanf(kbuf, "code_format %s", code) == 1) {
+        size = strlen(code);
+        if (size > 8) {
+            printk(KERN_INFO "codeconfig: Code cannot be greater than 8\n");
+            return -EINVAL;
+        }
+        for (i = 0; i < size; i++) {
+            if (code[i] != 'a' && code[i] != 'A' && code[i] != '0') {
+            printk(KERN_INFO "codeconfig: Code cannot contain a char different than a, A or 0\n");
+            return -EINVAL;
+            }
+        }
+        strncpy(code_format, code, 9);
+        codesize = size;
+    }
+    else {
+        printk(KERN_INFO "modlist: Opcion no valida\n");
+        return -EINVAL;
+    }
+    return len;
+}
+
+static ssize_t codeconfig_read(struct file* filp, char __user* buf, size_t len, loff_t* off) {
+    char kbuf[KBUF_SIZE];
+    int nBytes = 0;
+
+    if ((*off) > 0) /* Tell the application that there is nothing left to read */
+        return 0;
+
+    nBytes += sprintf(&kbuf[nBytes], "timer_period_ms=%d\n", timer_period_ms);
+    nBytes += sprintf(&kbuf[nBytes], "emergency_threshold=%d\n", emergency_threshold);
+    nBytes += sprintf(&kbuf[nBytes], "code_format=%s\n", code_format);
+
+    if (len < nBytes)
+        return -ENOSPC;
+
+    /* Transfer data from the kernel to userspace */
+    if (copy_to_user(buf, kbuf, nBytes))
+        return -EINVAL;
+
+    (*off) += len;  /* Update the file pointer */
+
+    return nBytes;
 }
 
 static const struct proc_ops codeconfig_entry_fops = {
-    .proc_read = codeconfig_read,
     .proc_write = codeconfig_write,   
+    .proc_read = codeconfig_read,
 };
 
-static const struct proc_ops codetimer_entry_fops = {
-    .proc_read = codetimer_read,
-    .proc_open = codetimer_open,
-    .proc_release = codetimer_release,    
-};
-
-int init_fifoproc_module( void )
+int init_timer_module( void )
 {
-  int ret = 0;
+    sema_init(&queue, 0);
 
-  if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
-  		printk(KERN_INFO "codetimer: Can't allocate memory to fifo\n");
-  		return -ENOMEM;
-  }
-  codetimer_entry = proc_create( "codetimer", 0666, NULL, &codetimer_entry_fops);
-  if (proc_entry == NULL) {
-        kfifo_free(&cbuffer);
-        printk(KERN_INFO "codetimer: Can't create /proc/codetimer entry\n");
+    codetimer_entry = proc_create( "codetimer", 0666, NULL, &codetimer_entry_fops);
+    if (codetimer_entry == NULL) {
+        printk(KERN_INFO "codetimer: Can't create /proc entry\n");
         return -ENOMEM;
-  } 
-  codeconfig_entry = proc_create( "codetimer", 0666, NULL, &codeconfig_entry_fops);
-  if (proc_entry == NULL) {
-        kfifo_free(&cbuffer);
+    }
+    codeconfig_entry = proc_create( "codeconfig", 0666, NULL, &codeconfig_entry_fops);
+    if (codeconfig_entry == NULL) {
         remove_proc_entry("codetimer", NULL);
-        printk(KERN_INFO "codetimer: Can't create /proc/codeconfig entry\n");
+        printk(KERN_INFO "codetimer: Can't create /proc entry\n");
         return -ENOMEM;
-  }
-
-  printk(KERN_INFO "codetimer: Module loaded\n");
-  return ret;
-
+    }
+    printk(KERN_INFO "codetimer: Module loaded\n");
+    return 0;
 }
 
 
-void exit_fifoproc_module( void )
-{
-  kfifo_reset(&cbuffer);
-  kfifo_free(&cbuffer);
-  remove_proc_entry("codeconfig", NULL);
-  remove_proc_entry("codetimer", NULL);
-  printk(KERN_INFO "fifoproc: Module unloaded.\n");
+void cleanup_timer_module( void ){
+    remove_proc_entry("codetimer", NULL);
+    remove_proc_entry("codeconfig", NULL);
+    printk(KERN_INFO "codetimer: Module unloaded\n");
 }
 
+module_init( init_timer_module );
+module_exit( cleanup_timer_module );
 
-module_init( init_fifoproc_module );
-module_exit( exit_fifoproc_module );
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("codetimer Module");
