@@ -7,13 +7,15 @@
 #include <linux/workqueue.h>
 #include <linux/semaphore.h>
 #include <linux/spinlock.h>
+#include <linux/random.h>
 
 #define MAX_CBUFFER_LEN 32
 #define KBUF_SIZE 256
+#define MAX_CODESIZE 8
 
 int timer_period_ms = 500;
 int emergency_threshold = 75;
-char code_format[9] = "aA00";
+char code_format[MAX_CODESIZE + 1] = "aA00";
 int codesize = 4;
 
 struct kfifo cbuffer;
@@ -29,6 +31,7 @@ static struct workqueue_struct* my_wq;
 static struct proc_dir_entry *codetimer_entry, *codeconfig_entry;
 
 int espera = 0;
+int abierto = 0;
 struct semaphore queue;
 
 DEFINE_SEMAPHORE(mtx);
@@ -40,9 +43,9 @@ void noinline trace_code_in_list(char* random_code) { asm(" "); };
 
 void noinline trace_code_read(char* random_code) { asm(" "); };
 
-static char * generate_code(void) {
+static void generate_code(char * code) {
+    char tmp[MAX_CODESIZE + 1];
     int random, i, value, shifted_bits;
-    char code[codesize];
 
     random = get_random_int();
     shifted_bits = 0;
@@ -55,7 +58,7 @@ static char * generate_code(void) {
             }
 
             value = random & 0xF; // Para obtener un número aleatorio solo necesitamos los últimos 4 bits (entre 0 y 15)
-            code[i] = '0' + value % 10; // Si hacemos módulo 10 de esos 4 bits anteriores y se lo sumamos a 0, obtenemos un número aleatorio entre 0 y 9
+            tmp[i] = '0' + value % 10; // Si hacemos módulo 10 de esos 4 bits anteriores y se lo sumamos a 0, obtenemos un número aleatorio entre 0 y 9
             random >>= 4; // Desplazamos el número random 4 bits para no trabajar siempre con los mismos bits
             shifted_bits += 4;
         }
@@ -66,13 +69,13 @@ static char * generate_code(void) {
             }
 
             value = random & 0x1F; // Para obtener una letra aleatoria solo necesitamos los últimos 5 bits (entre 0 y 31)
-            code[i] = code_format[i] + value % 25; // Si hacemos módulo 25 de esos 5 bits anteriores y se lo sumamos a 'a' o 'A', obtenemos una letra aleatoria
+            tmp[i] = code_format[i] + value % 25; // Si hacemos módulo 25 de esos 5 bits anteriores y se lo sumamos a 'a' o 'A', obtenemos una letra aleatoria
             random >>= 5; // Desplazamos el número random 5 bits para no trabajar siempre con los mismos bits
             shifted_bits += 5;
         }
     }
-
-    return code;
+    strncpy(code, tmp, codesize);
+    code[codesize] = '\0';
 }
 
 
@@ -111,30 +114,46 @@ static void copy_items_into_list(struct work_struct * wq) {
 static void fire_timer(struct timer_list *timer)
 {
     int cpu_actual;
-    char msg[] = "Hola";
-    if (kfifo_is_full(&cbuffer)) {
+    char code[MAX_CODESIZE + 1];
+    unsigned long flags; 
+
+    spin_lock_irqsave(&sp, flags);
+    if (kfifo_len(&cbuffer) * 100 / MAX_CBUFFER_LEN >= emergency_threshold) {
         flush_workqueue(my_wq);
         cpu_actual = smp_processor_id();
         queue_work_on(!(cpu_actual & 0x1), my_wq, &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
     }
     
-    kfifo_in(&cbuffer, msg, codesize);
-    trace_code_in_buffer(msg, codesize);
+    generate_code(code);
 
+    kfifo_in(&cbuffer, code, codesize);
+    trace_code_in_buffer(code, kfifo_len(&cbuffer));
+
+    spin_unlock_irqrestore(&sp, flags);
     
-    /* Re-activate the timer one second from now */
-    mod_timer(timer, jiffies + HZ); 
+    /* Re-activate the timer*/
+    mod_timer(timer, jiffies + msecs_to_jiffies(timer_period_ms)); 
 }
 
 static int codetimer_open(struct inode * inode, struct file * file) {
+    unsigned long flags;
+
+    if (abierto) {
+        printk(KERN_INFO "Codetimer is already opened\n");
+        return -EPERM;
+    }
+
+    abierto = 1;
     try_module_get(THIS_MODULE);
 
     INIT_LIST_HEAD(&mylist);
 
+    spin_lock_irqsave(&sp, flags);
     if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
         printk(KERN_INFO "Can't allocate memory to fifo\n");
         return -ENOMEM;
     }
+    spin_unlock_irqrestore(&sp, flags);
 
     /* Create workqueue*/
     my_wq = create_workqueue("my_queue");
@@ -143,7 +162,7 @@ static int codetimer_open(struct inode * inode, struct file * file) {
     /* Create timer */
     timer_setup(&my_timer, fire_timer, 0);
 
-    my_timer.expires=jiffies + HZ;  /* Activate it one second from now */
+    my_timer.expires=jiffies + msecs_to_jiffies(timer_period_ms);
     /* Activate the timer for the first time */
     add_timer(&my_timer);
 
@@ -156,8 +175,8 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
     struct list_head* pos, * e;
     struct list_item* item = NULL;
 
-    if ((*off) > 0) /* Tell the application that there is nothing left to read */
-        return 0;
+    /*if ((*off) > 0) // Tell the application that there is nothing left to read 
+        return 0; */
 
     if (down_interruptible(&mtx)) {
             return -EINTR;
@@ -210,6 +229,8 @@ static int codetimer_release(struct inode * inode, struct file * file) {
         kfifo_free(&cbuffer);
         spin_unlock_irqrestore(&sp, flags);
 
+        abierto = 0;
+
         module_put(THIS_MODULE);
 
         return 0;
@@ -259,7 +280,7 @@ static ssize_t codeconfig_write(struct file* filp, const char __user* buf, size_
     }
     else if (sscanf(kbuf, "code_format %s", code) == 1) {
         size = strlen(code);
-        if (size > 8) {
+        if (size > MAX_CODESIZE) {
             printk(KERN_INFO "codeconfig: Code cannot be greater than 8\n");
             return -EINVAL;
         }
