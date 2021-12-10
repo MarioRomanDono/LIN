@@ -15,12 +15,8 @@
 
 int timer_period_ms = 500;
 int emergency_threshold = 75;
-char code_format[MAX_CODESIZE + 1] = "aA00";
-
-int elementos_kfifo[MAX_CBUFFER_LEN];
-int nElementos_kfifo = 0;
-
-int codesize = 4;
+// char code_format[MAX_CODESIZE + 1] = "aA00";
+// int codesize = 4;
 
 struct kfifo cbuffer;
 static struct list_head mylist_even;
@@ -35,9 +31,11 @@ struct work_struct my_work;
 static struct workqueue_struct* my_wq; 
 static struct proc_dir_entry *codetimer_entry, *codeconfig_entry;
 
-int espera = 0;
+int espera_par = 0;
+int espera_impar = 0;
 int abierto = 0;
-struct semaphore queue;
+int tarea_planificada = 0;
+struct semaphore queue_par, queue_impar;
 
 DEFINE_SEMAPHORE(mtx);
 DEFINE_SPINLOCK(sp);
@@ -48,9 +46,15 @@ void noinline trace_code_in_list(char* random_code) { asm(" "); };
 
 void noinline trace_code_read(char* random_code) { asm(" "); };
 
+void noinline trace_code_format(char* random_code, int codesize) { asm(" "); };
+
+void noinline trace_par(char* private_data, int leerImpar) { asm(" "); };
+
+
 static void generate_code(char * code) {
+    char code_format[MAX_CODESIZE + 1];
     char tmp[MAX_CODESIZE + 1];
-    int random, i, value, shifted_bits, caracter;
+    int random, i, value, shifted_bits, caracter, codesize;
 
     random = get_random_int();
     shifted_bits = 0;
@@ -64,13 +68,16 @@ static void generate_code(char * code) {
             random = get_random_int();
             shifted_bits = 0;
         }
-        caracter = random & 0x3 % 3;
+        caracter = (random & 0x3) % 3;
         if (caracter == 0) code_format[i] = '0';
         if (caracter == 1) code_format[i] = 'a';
         if (caracter == 2) code_format[i] = 'A';
         random >>= 2;
         shifted_bits += 2;
     }
+    code_format[codesize] = '\0';
+
+    trace_code_format(code_format, codesize);
 
     for (i = 0; i < codesize; i++) {
         if (code_format[i] == '0') {
@@ -102,49 +109,50 @@ static void generate_code(char * code) {
 
 static void copy_items_into_list(struct work_struct * wq) {
     char kbuf[MAX_CBUFFER_LEN];
-    int elementos[MAX_CBUFFER_LEN]; 
-    int nBytes, i, ret, nElementos;
+    int nBytes, pos, ret, size, hayPar, hayImpar;
     unsigned long flags;
 
     spin_lock_irqsave(&sp, flags);
-
     nBytes = kfifo_out(&cbuffer,kbuf,MAX_CBUFFER_LEN);
-
-    for (i = 0; i < nElementos_kfifo; i++) {
-        elementos[i] = elementos_kfifo[i];
-        elementos_kfifo[i] = 0;
-    }
-
-    nElementos = nElementos_kfifo;
-    nElementos_kfifo = 0;
-
     spin_unlock_irqrestore(&sp, flags);
-
-    //aux = nBytes / codesize;
 
     ret = down_interruptible(&mtx);
 
-    for (i = 0; i < nElementos; i++) {
+    pos = 0;
+    
+    while (pos < nBytes) {
         struct list_item* item = vmalloc(sizeof(struct list_item));
-        item->data = vmalloc(sizeof(char) * elementos[i]);
-        strncpy(item->data, &kbuf[i * elementos[i]], elementos[i]);
+        size = strlen(&kbuf[pos]) + 1;
+        item->data = vmalloc(sizeof(char) * size);
+        strncpy(item->data, &kbuf[pos], size);
 
-        if (elementos[i] & 0x1) { // Impar
+        // Es necesario restar 1 para no contar el carácter nulo
+        if ( (size - 1) & 0x1) {
             list_add_tail(&item->links, &mylist_odd);
+            hayImpar = 1;
         }
-        else { // Par
+        else {
             list_add_tail(&item->links, &mylist_even);
-        }        
+            hayPar = 1;
+        }
 
         trace_code_in_list(item->data);
+
+        pos += size;
     }
 
-    if (espera>0) {
-        up(&queue);
-        espera--;
+    if (hayPar && espera_par>0) {
+        up(&queue_par);
+        espera_par--;
     }
 
+    if (hayImpar && espera_impar>0) {
+        up(&queue_impar);
+        espera_impar--;
+    }
     up(&mtx);
+
+    tarea_planificada = 0;
 }
 
 /* Function invoked when timer expires (fires) */
@@ -155,20 +163,18 @@ static void fire_timer(struct timer_list *timer)
     unsigned long flags; 
 
     spin_lock_irqsave(&sp, flags);
-    if (kfifo_len(&cbuffer) * 100 / MAX_CBUFFER_LEN >= emergency_threshold) {
-        flush_workqueue(my_wq);
-        cpu_actual = smp_processor_id();
-        queue_work_on(!(cpu_actual & 0x1), my_wq, &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
-    }
     
     generate_code(code);
 
-    kfifo_in(&cbuffer, code, codesize);
-
-    elementos_kfifo[nElementos_kfifo] = codesize;
-    nElementos_kfifo++;
+    kfifo_in(&cbuffer, code, strlen(code) + 1);
 
     trace_code_in_buffer(code, kfifo_len(&cbuffer));
+
+    if (!tarea_planificada && (kfifo_len(&cbuffer) * 100) / MAX_CBUFFER_LEN >= emergency_threshold) {
+        cpu_actual = smp_processor_id();
+        queue_work_on(!(cpu_actual & 0x1), my_wq, &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
+        tarea_planificada = 1;
+    }
 
     spin_unlock_irqrestore(&sp, flags);
     
@@ -188,6 +194,7 @@ static int codetimer_open(struct inode * inode, struct file * file) {
 
     abierto++;
 
+    // Si se abre por primera vez se inicializan todos los campos pero no se activa el timer
     if (abierto == 1) {
         INIT_LIST_HEAD(&mylist_even);
         INIT_LIST_HEAD(&mylist_odd);
@@ -210,6 +217,7 @@ static int codetimer_open(struct inode * inode, struct file * file) {
 
         file->private_data = "par";
     }
+    // Si se abre por segunda vez no hace falta inicializar nada, solo activar el timer
     else {
         file->private_data = "impar";
         /* Activate the timer for the first time */
@@ -224,29 +232,18 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
     int nBytes = 0;
     struct list_head* pos, * e;
     struct list_item* item = NULL;
-    int leerImpar;
-
-    /*if ((*off) > 0) // Tell the application that there is nothing left to read 
-        return 0; */
-
-    if (strcmp(filp->private_data, "par") == 0) {
-        leerImpar = 0;
-    }
-    else {
-        leerImpar = 1;
-    }
 
     if (down_interruptible(&mtx)) {
             return -EINTR;
     }
 
-    if (leerImpar) {
-        if (list_empty(&mylist_odd)) {
-            espera++;
+    if (strcmp(filp->private_data, "impar") == 0) {
+        while (list_empty(&mylist_odd)) {
+            espera_impar++;
             up(&mtx);
-            if (down_interruptible(&queue)){
+            if (down_interruptible(&queue_impar)){
                 down(&mtx);
-                espera--;
+                espera_impar--;
                 up(&mtx);
                 return -EINTR;
             }
@@ -262,16 +259,14 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
             vfree(item->data);
             vfree(item);
         }
-
-    }
-    
+    }    
     else {
-        if (list_empty(&mylist_even)) {
-            espera++;
+        while (list_empty(&mylist_even)) {
+            espera_par++;
             up(&mtx);
-            if (down_interruptible(&queue)){
+            if (down_interruptible(&queue_par)){
                 down(&mtx);
-                espera--;
+                espera_par--;
                 up(&mtx);
                 return -EINTR;
             }
@@ -314,7 +309,7 @@ static int codetimer_release(struct inode * inode, struct file * file) {
     kfifo_free(&cbuffer);
     spin_unlock_irqrestore(&sp, flags);
 
-    abierto = 0;
+    abierto--;
 
     module_put(THIS_MODULE);
 
@@ -331,8 +326,7 @@ static ssize_t codeconfig_write(struct file* filp, const char __user* buf, size_
 
     int available_space = KBUF_SIZE - 1;
     char kbuf[KBUF_SIZE];
-    char code[KBUF_SIZE];
-    int numero, i, size;
+    int numero;
 
     if ((*off) > 0) /* The application can write in this entry just once !! */
         return 0;
@@ -363,6 +357,9 @@ static ssize_t codeconfig_write(struct file* filp, const char __user* buf, size_
         }
         emergency_threshold = numero;
     }
+
+    /* No tiene sentido que se pueda modificar code_format si el formato es aleatorio
+
     else if (sscanf(kbuf, "code_format %s", code) == 1) {
         size = strlen(code);
         if (size > MAX_CODESIZE) {
@@ -377,7 +374,8 @@ static ssize_t codeconfig_write(struct file* filp, const char __user* buf, size_
         }
         strncpy(code_format, code, 9);
         codesize = size;
-    }
+    } */
+
     else {
         printk(KERN_INFO "modlist: Opcion no valida\n");
         return -EINVAL;
@@ -394,7 +392,7 @@ static ssize_t codeconfig_read(struct file* filp, char __user* buf, size_t len, 
 
     nBytes += sprintf(&kbuf[nBytes], "timer_period_ms=%d\n", timer_period_ms);
     nBytes += sprintf(&kbuf[nBytes], "emergency_threshold=%d\n", emergency_threshold);
-    nBytes += sprintf(&kbuf[nBytes], "code_format=%s\n", code_format);
+    // nBytes += sprintf(&kbuf[nBytes], "code_format=%s\n", code_format);
 
     if (len < nBytes)
         return -ENOSPC;
@@ -415,7 +413,8 @@ static const struct proc_ops codeconfig_entry_fops = {
 
 int init_timer_module( void )
 {
-    sema_init(&queue, 0);
+    sema_init(&queue_impar, 0);
+    sema_init(&queue_par, 0);
 
     codetimer_entry = proc_create( "codetimer", 0666, NULL, &codetimer_entry_fops);
     if (codetimer_entry == NULL) {
