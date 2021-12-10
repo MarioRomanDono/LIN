@@ -16,10 +16,15 @@
 int timer_period_ms = 500;
 int emergency_threshold = 75;
 char code_format[MAX_CODESIZE + 1] = "aA00";
+
+int elementos_kfifo[MAX_CBUFFER_LEN];
+int nElementos_kfifo = 0;
+
 int codesize = 4;
 
 struct kfifo cbuffer;
-static struct list_head mylist;
+static struct list_head mylist_even;
+static struct list_head mylist_odd;
 struct list_item {
     char * data;
     struct list_head links;
@@ -45,10 +50,27 @@ void noinline trace_code_read(char* random_code) { asm(" "); };
 
 static void generate_code(char * code) {
     char tmp[MAX_CODESIZE + 1];
-    int random, i, value, shifted_bits;
+    int random, i, value, shifted_bits, caracter;
 
     random = get_random_int();
     shifted_bits = 0;
+
+    codesize = (random & 0x7) + 1;
+    random >>= 3;
+    shifted_bits += 3;
+
+    for (i = 0; i < codesize; i++) {
+        if (shifted_bits + 2 > 32) { // Si vamos a superar los 32 bits del primer random, generamos uno nuevo
+            random = get_random_int();
+            shifted_bits = 0;
+        }
+        caracter = random & 0x3 % 3;
+        if (caracter == 0) code_format[i] = '0';
+        if (caracter == 1) code_format[i] = 'a';
+        if (caracter == 2) code_format[i] = 'A';
+        random >>= 2;
+        shifted_bits += 2;
+    }
 
     for (i = 0; i < codesize; i++) {
         if (code_format[i] == '0') {
@@ -78,33 +100,43 @@ static void generate_code(char * code) {
     code[codesize] = '\0';
 }
 
-
 static void copy_items_into_list(struct work_struct * wq) {
     char kbuf[MAX_CBUFFER_LEN];
-    int nBytes, pos, i, ret, size;
+    int elementos[MAX_CBUFFER_LEN]; 
+    int nBytes, i, ret, nElementos;
     unsigned long flags;
 
     spin_lock_irqsave(&sp, flags);
+
     nBytes = kfifo_out(&cbuffer,kbuf,MAX_CBUFFER_LEN);
+
+    for (i = 0; i < nElementos_kfifo; i++) {
+        elementos[i] = elementos_kfifo[i];
+        elementos_kfifo[i] = 0;
+    }
+
+    nElementos = nElementos_kfifo;
+    nElementos_kfifo = 0;
+
     spin_unlock_irqrestore(&sp, flags);
 
     //aux = nBytes / codesize;
 
     ret = down_interruptible(&mtx);
 
-    pos = 0;
-    
-    while (pos < MAX_CBUFFER_LEN && strlen(&kbuf[pos]) != 0) {
+    for (i = 0; i < nElementos; i++) {
         struct list_item* item = vmalloc(sizeof(struct list_item));
-        size = strlen(kbuf);
-        item->data = vmalloc(sizeof(char) * size);
-        strncpy(item->data, &kbuf[pos], size);
+        item->data = vmalloc(sizeof(char) * elementos[i]);
+        strncpy(item->data, &kbuf[i * elementos[i]], elementos[i]);
 
-        list_add_tail(&item->links, &mylist);
+        if (elementos[i] & 0x1) { // Impar
+            list_add_tail(&item->links, &mylist_odd);
+        }
+        else { // Par
+            list_add_tail(&item->links, &mylist_even);
+        }        
 
         trace_code_in_list(item->data);
-
-        pos += size + 1;
     }
 
     if (espera>0) {
@@ -123,21 +155,20 @@ static void fire_timer(struct timer_list *timer)
     unsigned long flags; 
 
     spin_lock_irqsave(&sp, flags);
-
-    
-    generate_code(code);
-
-    kfifo_in(&cbuffer, code, strlen(code) + 1);
-
-
-
-    trace_code_in_buffer(code, kfifo_len(&cbuffer));
-
-    if ( (kfifo_len(&cbuffer) * 100) / MAX_CBUFFER_LEN >= emergency_threshold) {
-        //flush_workqueue(my_wq);
+    if (kfifo_len(&cbuffer) * 100 / MAX_CBUFFER_LEN >= emergency_threshold) {
+        flush_workqueue(my_wq);
         cpu_actual = smp_processor_id();
         queue_work_on(!(cpu_actual & 0x1), my_wq, &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
     }
+    
+    generate_code(code);
+
+    kfifo_in(&cbuffer, code, codesize);
+
+    elementos_kfifo[nElementos_kfifo] = codesize;
+    nElementos_kfifo++;
+
+    trace_code_in_buffer(code, kfifo_len(&cbuffer));
 
     spin_unlock_irqrestore(&sp, flags);
     
@@ -148,33 +179,42 @@ static void fire_timer(struct timer_list *timer)
 static int codetimer_open(struct inode * inode, struct file * file) {
     unsigned long flags;
 
-    if (abierto) {
-        printk(KERN_INFO "Codetimer is already opened\n");
+    if (abierto == 2) {
+        printk(KERN_INFO "codetimer: codetimer cannot be opened more than two times\n");
         return -EPERM;
     }
 
-    abierto = 1;
     try_module_get(THIS_MODULE);
 
-    INIT_LIST_HEAD(&mylist);
+    abierto++;
 
-    spin_lock_irqsave(&sp, flags);
-    if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
-        printk(KERN_INFO "Can't allocate memory to fifo\n");
-        return -ENOMEM;
+    if (abierto == 1) {
+        INIT_LIST_HEAD(&mylist_even);
+        INIT_LIST_HEAD(&mylist_odd);
+
+        spin_lock_irqsave(&sp, flags);
+        if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
+            printk(KERN_INFO "Can't allocate memory to fifo\n");
+            return -ENOMEM;
+        }
+        spin_unlock_irqrestore(&sp, flags);
+
+        /* Create workqueue*/
+        my_wq = create_workqueue("my_queue");
+        INIT_WORK(&my_work, copy_items_into_list);
+
+        /* Create timer */
+        timer_setup(&my_timer, fire_timer, 0);
+
+        my_timer.expires=jiffies + msecs_to_jiffies(timer_period_ms);
+
+        file->private_data = "par";
     }
-    spin_unlock_irqrestore(&sp, flags);
-
-    /* Create workqueue*/
-    my_wq = create_workqueue("my_queue");
-    INIT_WORK(&my_work, copy_items_into_list);
-
-    /* Create timer */
-    timer_setup(&my_timer, fire_timer, 0);
-
-    my_timer.expires=jiffies + msecs_to_jiffies(timer_period_ms);
-    /* Activate the timer for the first time */
-    add_timer(&my_timer);
+    else {
+        file->private_data = "impar";
+        /* Activate the timer for the first time */
+        add_timer(&my_timer);
+    }
 
     return 0;
 }
@@ -184,34 +224,69 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
     int nBytes = 0;
     struct list_head* pos, * e;
     struct list_item* item = NULL;
+    int leerImpar;
 
     /*if ((*off) > 0) // Tell the application that there is nothing left to read 
         return 0; */
+
+    if (strcmp(filp->private_data, "par") == 0) {
+        leerImpar = 0;
+    }
+    else {
+        leerImpar = 1;
+    }
 
     if (down_interruptible(&mtx)) {
             return -EINTR;
     }
 
-    if (list_empty(&mylist)) {
-        espera++;
-        up(&mtx);
-        if (down_interruptible(&queue)){
-            down(&mtx);
-            espera--;
+    if (leerImpar) {
+        if (list_empty(&mylist_odd)) {
+            espera++;
             up(&mtx);
-            return -EINTR;
+            if (down_interruptible(&queue)){
+                down(&mtx);
+                espera--;
+                up(&mtx);
+                return -EINTR;
+            }
+            if (down_interruptible(&mtx))
+                return -EINTR;
         }
-        if (down_interruptible(&mtx))
-            return -EINTR;
-    }
 
-    list_for_each_safe(pos, e, &mylist) {
-        item = list_entry(pos, struct list_item, links);
-        nBytes += sprintf(&kbuf[nBytes], "%s\n", item->data);
-        list_del(pos);
-        trace_code_read(item->data);  
-        vfree(item->data);
-        vfree(item);
+        list_for_each_safe(pos, e, &mylist_odd) {
+            item = list_entry(pos, struct list_item, links);
+            nBytes += sprintf(&kbuf[nBytes], "%s\n", item->data);
+            list_del(pos);
+            trace_code_read(item->data);  
+            vfree(item->data);
+            vfree(item);
+        }
+
+    }
+    
+    else {
+        if (list_empty(&mylist_even)) {
+            espera++;
+            up(&mtx);
+            if (down_interruptible(&queue)){
+                down(&mtx);
+                espera--;
+                up(&mtx);
+                return -EINTR;
+            }
+            if (down_interruptible(&mtx))
+                return -EINTR;
+        }
+
+        list_for_each_safe(pos, e, &mylist_even) {
+            item = list_entry(pos, struct list_item, links);
+            nBytes += sprintf(&kbuf[nBytes], "%s\n", item->data);
+            list_del(pos);
+            trace_code_read(item->data);  
+            vfree(item->data);
+            vfree(item);
+        }
     }
 
     up(&mtx);
@@ -229,21 +304,21 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
 }
 
 static int codetimer_release(struct inode * inode, struct file * file) {
-        unsigned long flags;
+    unsigned long flags;
 
-        del_timer_sync(&my_timer); 
-        flush_workqueue(my_wq);
+    del_timer_sync(&my_timer); 
+    flush_workqueue(my_wq);
 
-        spin_lock_irqsave(&sp, flags);
-        kfifo_reset(&cbuffer);
-        kfifo_free(&cbuffer);
-        spin_unlock_irqrestore(&sp, flags);
+    spin_lock_irqsave(&sp, flags);
+    kfifo_reset(&cbuffer);
+    kfifo_free(&cbuffer);
+    spin_unlock_irqrestore(&sp, flags);
 
-        abierto = 0;
+    abierto = 0;
 
-        module_put(THIS_MODULE);
+    module_put(THIS_MODULE);
 
-        return 0;
+    return 0;
 }
 
 static const struct proc_ops codetimer_entry_fops = {
