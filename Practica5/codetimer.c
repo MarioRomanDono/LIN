@@ -32,6 +32,7 @@ static struct proc_dir_entry *codetimer_entry, *codeconfig_entry;
 
 int espera = 0;
 int abierto = 0;
+int tarea_planificada = 0;
 struct semaphore queue;
 
 DEFINE_SEMAPHORE(mtx);
@@ -81,22 +82,20 @@ static void generate_code(char * code) {
 
 static void copy_items_into_list(struct work_struct * wq) {
     char kbuf[MAX_CBUFFER_LEN];
-    int nBytes, pos, i, ret, size;
+    int nBytes, pos, ret, size;
     unsigned long flags;
 
     spin_lock_irqsave(&sp, flags);
     nBytes = kfifo_out(&cbuffer,kbuf,MAX_CBUFFER_LEN);
     spin_unlock_irqrestore(&sp, flags);
 
-    //aux = nBytes / codesize;
-
     ret = down_interruptible(&mtx);
 
     pos = 0;
     
-    while (pos < MAX_CBUFFER_LEN && strlen(&kbuf[pos]) != 0) {
+    while (pos < nBytes) {
         struct list_item* item = vmalloc(sizeof(struct list_item));
-        size = strlen(kbuf);
+        size = strlen(&kbuf[pos]) + 1;
         item->data = vmalloc(sizeof(char) * size);
         strncpy(item->data, &kbuf[pos], size);
 
@@ -104,7 +103,7 @@ static void copy_items_into_list(struct work_struct * wq) {
 
         trace_code_in_list(item->data);
 
-        pos += size + 1;
+        pos += size;
     }
 
     if (espera>0) {
@@ -113,6 +112,8 @@ static void copy_items_into_list(struct work_struct * wq) {
     }
 
     up(&mtx);
+
+    tarea_planificada = 0;
 }
 
 /* Function invoked when timer expires (fires) */
@@ -123,20 +124,17 @@ static void fire_timer(struct timer_list *timer)
     unsigned long flags; 
 
     spin_lock_irqsave(&sp, flags);
-
     
     generate_code(code);
 
     kfifo_in(&cbuffer, code, strlen(code) + 1);
 
-
-
     trace_code_in_buffer(code, kfifo_len(&cbuffer));
 
-    if ( (kfifo_len(&cbuffer) * 100) / MAX_CBUFFER_LEN >= emergency_threshold) {
-        //flush_workqueue(my_wq);
+    if (!tarea_planificada && (kfifo_len(&cbuffer) * 100) / MAX_CBUFFER_LEN >= emergency_threshold) {
         cpu_actual = smp_processor_id();
         queue_work_on(!(cpu_actual & 0x1), my_wq, &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
+        tarea_planificada = 1;
     }
 
     spin_unlock_irqrestore(&sp, flags);
@@ -149,11 +147,12 @@ static int codetimer_open(struct inode * inode, struct file * file) {
     unsigned long flags;
 
     if (abierto) {
-        printk(KERN_INFO "Codetimer is already opened\n");
+        printk(KERN_INFO "codetimer: proc entry is already opened\n");
         return -EPERM;
     }
 
     abierto = 1;
+
     try_module_get(THIS_MODULE);
 
     INIT_LIST_HEAD(&mylist);
@@ -161,6 +160,7 @@ static int codetimer_open(struct inode * inode, struct file * file) {
     spin_lock_irqsave(&sp, flags);
     if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
         printk(KERN_INFO "Can't allocate memory to fifo\n");
+        module_put(THIS_MODULE);
         return -ENOMEM;
     }
     spin_unlock_irqrestore(&sp, flags);
@@ -185,11 +185,8 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
     struct list_head* pos, * e;
     struct list_item* item = NULL;
 
-    /*if ((*off) > 0) // Tell the application that there is nothing left to read 
-        return 0; */
-
     if (down_interruptible(&mtx)) {
-            return -EINTR;
+        return -EINTR;
     }
 
     if (list_empty(&mylist)) {
@@ -229,21 +226,21 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
 }
 
 static int codetimer_release(struct inode * inode, struct file * file) {
-        unsigned long flags;
+    unsigned long flags;
 
-        del_timer_sync(&my_timer); 
-        flush_workqueue(my_wq);
+    del_timer_sync(&my_timer); 
+    flush_workqueue(my_wq);
 
-        spin_lock_irqsave(&sp, flags);
-        kfifo_reset(&cbuffer);
-        kfifo_free(&cbuffer);
-        spin_unlock_irqrestore(&sp, flags);
+    spin_lock_irqsave(&sp, flags);
+    kfifo_reset(&cbuffer);
+    kfifo_free(&cbuffer);
+    spin_unlock_irqrestore(&sp, flags);
 
-        abierto = 0;
+    abierto = 0;
 
-        module_put(THIS_MODULE);
+    module_put(THIS_MODULE);
 
-        return 0;
+    return 0;
 }
 
 static const struct proc_ops codetimer_entry_fops = {
@@ -300,11 +297,11 @@ static ssize_t codeconfig_write(struct file* filp, const char __user* buf, size_
             return -EINVAL;
             }
         }
-        strncpy(code_format, code, 9);
+        strncpy(code_format, code, size + 1);
         codesize = size;
     }
     else {
-        printk(KERN_INFO "modlist: Opcion no valida\n");
+        printk(KERN_INFO "codeconfig: Opcion no valida\n");
         return -EINVAL;
     }
     return len;
