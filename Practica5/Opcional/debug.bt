@@ -1,5 +1,6 @@
 kprobe:trace_code_in_buffer{ printf("Generated code: %s Size of buffer: %d\n", str(arg0), arg1); }
 kprobe:trace_code_in_list{ printf("Code moved to the list: %s\n", str(arg0)); }
 kprobe:trace_code_read{ printf("Code deleted from the list: %s\n", str(arg0)); }
+/* Descomentar si se quieren usar estas funciones extra para debuggear:
 kprobe:trace_code_format{ printf("Code format: %s Codesize: %d\n", str(arg0), arg1); }
-kprobe:trace_par{ printf("Private_data: %s Aux: %d\n", str(arg0), arg1); }
+kprobe:trace_par{ printf("Private_data: %s\n", str(arg0)); } */

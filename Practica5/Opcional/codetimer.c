@@ -15,8 +15,6 @@
 
 int timer_period_ms = 500;
 int emergency_threshold = 75;
-// char code_format[MAX_CODESIZE + 1] = "aA00";
-// int codesize = 4;
 
 struct kfifo cbuffer;
 static struct list_head mylist_even;
@@ -28,7 +26,6 @@ struct list_item {
 
 struct timer_list my_timer; /* Structure that describes the kernel timer */
 struct work_struct my_work;
-static struct workqueue_struct* my_wq; 
 static struct proc_dir_entry *codetimer_entry, *codeconfig_entry;
 
 int espera_par = 0;
@@ -46,9 +43,12 @@ void noinline trace_code_in_list(char* random_code) { asm(" "); };
 
 void noinline trace_code_read(char* random_code) { asm(" "); };
 
-void noinline trace_code_format(char* random_code, int codesize) { asm(" "); };
+/* Descomentar estas funciones de bpftrace si se quiere debuggear el formato aleatorio generado
+o si se abre primero para leer los pares y luego los impares correctamente 
 
-void noinline trace_par(char* private_data, int leerImpar) { asm(" "); };
+void noinline trace_code_format(char* random_code, int codesize) { asm(" "); };
+void noinline trace_par(char* private_data) { asm(" "); };
+*/
 
 
 static void generate_code(char * code) {
@@ -59,7 +59,7 @@ static void generate_code(char * code) {
     random = get_random_int();
     shifted_bits = 0;
 
-    codesize = (random & 0x7) + 1;
+    codesize = (random & 0x7) + 1; // Para obtener un tamaño entre 0 y 8 solo necesitamos los tres últimos bits
     random >>= 3;
     shifted_bits += 3;
 
@@ -68,7 +68,7 @@ static void generate_code(char * code) {
             random = get_random_int();
             shifted_bits = 0;
         }
-        caracter = (random & 0x3) % 3;
+        caracter = (random & 0x3) % 3; // Para obtener un tamaño entre 0 y 2 solo necesitamos los dos últimos bits y hacer módulo 3
         if (caracter == 0) code_format[i] = '0';
         if (caracter == 1) code_format[i] = 'a';
         if (caracter == 2) code_format[i] = 'A';
@@ -77,7 +77,7 @@ static void generate_code(char * code) {
     }
     code_format[codesize] = '\0';
 
-    trace_code_format(code_format, codesize);
+    // trace_code_format(code_format, codesize);
 
     for (i = 0; i < codesize; i++) {
         if (code_format[i] == '0') {
@@ -172,7 +172,7 @@ static void fire_timer(struct timer_list *timer)
 
     if (!tarea_planificada && (kfifo_len(&cbuffer) * 100) / MAX_CBUFFER_LEN >= emergency_threshold) {
         cpu_actual = smp_processor_id();
-        queue_work_on(!(cpu_actual & 0x1), my_wq, &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
+        schedule_work_on(!(cpu_actual & 0x1), &my_work); // Toma el último bit de la cpu (paridad) y lo alterna
         tarea_planificada = 1;
     }
 
@@ -206,8 +206,7 @@ static int codetimer_open(struct inode * inode, struct file * file) {
         }
         spin_unlock_irqrestore(&sp, flags);
 
-        /* Create workqueue*/
-        my_wq = create_workqueue("my_queue");
+        /* Create work*/
         INIT_WORK(&my_work, copy_items_into_list);
 
         /* Create timer */
@@ -217,10 +216,10 @@ static int codetimer_open(struct inode * inode, struct file * file) {
 
         file->private_data = "par";
     }
-    // Si se abre por segunda vez no hace falta inicializar nada, solo activar el timer
+    // Si se abre por segunda vez no hace falta inicializar nada (aparte del campo private_data), solo activar el timer
     else {
         file->private_data = "impar";
-        /* Activate the timer for the first time */
+
         add_timer(&my_timer);
     }
 
@@ -301,16 +300,15 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
 static int codetimer_release(struct inode * inode, struct file * file) {
     unsigned long flags;
 
-    del_timer_sync(&my_timer); 
-    flush_workqueue(my_wq);
-
-    spin_lock_irqsave(&sp, flags);
-    kfifo_reset(&cbuffer);
-    kfifo_free(&cbuffer);
-    spin_unlock_irqrestore(&sp, flags);
+    if (abierto == 2) { // Solo es necesario liberar las estructuras cuando se cierra el primer lector
+        del_timer_sync(&my_timer); 
+        spin_lock_irqsave(&sp, flags);
+        kfifo_reset(&cbuffer);
+        kfifo_free(&cbuffer);
+        spin_unlock_irqrestore(&sp, flags);
+    }
 
     abierto--;
-
     module_put(THIS_MODULE);
 
     return 0;
