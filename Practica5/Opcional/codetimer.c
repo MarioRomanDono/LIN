@@ -28,9 +28,10 @@ struct timer_list my_timer; /* Structure that describes the kernel timer */
 struct work_struct my_work;
 static struct proc_dir_entry *codetimer_entry, *codeconfig_entry;
 
+static atomic_t abierto = ATOMIC_INIT(0); // Contador atómico que controla que /proc/codetimer solo se abra una vez
+
 int espera_par = 0;
 int espera_impar = 0;
-int abierto = 0;
 int tarea_planificada = 0;
 struct semaphore queue_par, queue_impar;
 
@@ -185,17 +186,17 @@ static void fire_timer(struct timer_list *timer)
 static int codetimer_open(struct inode * inode, struct file * file) {
     unsigned long flags;
 
-    if (abierto == 2) {
+    if (atomic_read(&abierto) == 2) {
         printk(KERN_INFO "codetimer: codetimer cannot be opened more than two times\n");
         return -EPERM;
     }
 
     try_module_get(THIS_MODULE);
 
-    abierto++;
+    atomic_inc(&abierto);
 
     // Si se abre por primera vez se inicializan todos los campos pero no se activa el timer
-    if (abierto == 1) {
+    if (atomic_read(&abierto) == 1) {
         INIT_LIST_HEAD(&mylist_even);
         INIT_LIST_HEAD(&mylist_odd);
 
@@ -300,7 +301,7 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
 static int codetimer_release(struct inode * inode, struct file * file) {
     unsigned long flags;
 
-    if (abierto == 2) { // Solo es necesario liberar las estructuras cuando se cierra el primer lector
+    if (atomic_read(&abierto) == 2) { // Solo es necesario liberar las estructuras cuando se cierra el primer lector
         del_timer_sync(&my_timer); 
         spin_lock_irqsave(&sp, flags);
         kfifo_reset(&cbuffer);
@@ -308,7 +309,7 @@ static int codetimer_release(struct inode * inode, struct file * file) {
         spin_unlock_irqrestore(&sp, flags);
     }
 
-    abierto--;
+    atomic_dec(&abierto);
     module_put(THIS_MODULE);
 
     return 0;

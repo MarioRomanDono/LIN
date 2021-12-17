@@ -30,8 +30,9 @@ struct work_struct my_work;
 static struct workqueue_struct* my_wq; 
 static struct proc_dir_entry *codetimer_entry, *codeconfig_entry;
 
+static atomic_t abierto = ATOMIC_INIT(0); // Contador atómico que controla que /proc/codetimer solo se abra una vez
+
 int espera = 0;
-int abierto = 0;
 int tarea_planificada = 0;
 struct semaphore queue;
 
@@ -146,12 +147,12 @@ static void fire_timer(struct timer_list *timer)
 static int codetimer_open(struct inode * inode, struct file * file) {
     unsigned long flags;
 
-    if (abierto) {
+    if (atomic_read(&abierto)) {
         printk(KERN_INFO "codetimer: proc entry is already opened\n");
         return -EPERM;
     }
 
-    abierto = 1;
+    atomic_inc(&abierto);
 
     try_module_get(THIS_MODULE);
 
@@ -236,7 +237,7 @@ static int codetimer_release(struct inode * inode, struct file * file) {
     kfifo_free(&cbuffer);
     spin_unlock_irqrestore(&sp, flags);
 
-    abierto = 0;
+    atomic_dec(&abierto);
 
     module_put(THIS_MODULE);
 
