@@ -1,3 +1,0 @@
-kprobe:trace_code_in_buffer{ printf("Generated code: %s\n", str(arg0)); }
-kprobe:trace_code_in_list{ printf("Code moved to the list: %s\n", str(arg0)); }
-kprobe:trace_code_read{ printf("Code deleted from the list: %s\n", str(arg0)); }
