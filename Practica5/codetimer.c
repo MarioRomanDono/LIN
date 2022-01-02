@@ -203,6 +203,7 @@ static ssize_t codetimer_read(struct file* filp, char __user* buf, size_t len, l
             return -EINTR;
     }
 
+    // Posible buffer overflow!!
     list_for_each_safe(pos, e, &mylist) {
         item = list_entry(pos, struct list_item, links);
         nBytes += sprintf(&kbuf[nBytes], "%s\n", item->data);
