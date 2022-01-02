@@ -7,25 +7,44 @@
 MODULE_LICENSE("GPL");
 
 #define MAX_KBUF 1024
-#define MAX_CBUFFER_LEN 1024
 
 static int max_entries = 5;
 static int max_size = 32;
+static int entry_counter = 0;
 
 module_param(max_entries, int, 0000);
 MODULE_PARM_DESC(max_entries, "Max number of created entries (must be greater than 0)");
 module_param(max_size, int, 0000);
 MODULE_PARM_DESC(max_size, "Max size of circular number (must be power of 2)");
 
-static struct proc_dir_entry *proc_entry;
+static struct proc_dir_entry *multififo_dir;
 
-int prod_count=0,cons_count=0;
+static struct list_element {
+    int prod_count, cons_count, nr_prod_waiting, nr_cons_waiting;
+    struct kfifo cbuffer;
+    struct semaphore mtx;
+    struct semaphore sem_prod;
+    struct semaphore sem_cons;
+};
+
+/*int prod_count=0,cons_count=0;
 struct kfifo cbuffer;
 struct semaphore mtx;
 struct semaphore sem_prod;
 struct semaphore sem_cons;
 int nr_prod_waiting=0;
 int nr_cons_waiting=0;
+
+sema_init(&mtx, 1);
+sema_init(&sem_cons, 0);
+sema_init(&sem_prod, 0);
+
+if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
+    printk(KERN_INFO "fifoproc: Can't allocate memory to fifo\n");
+    return -ENOMEM;
+}
+
+*/
 
 static int fifoproc_open(struct inode * inode, struct file * file) {
   if (down_interruptible(&mtx)) {
@@ -91,7 +110,7 @@ static ssize_t fifoproc_write(struct file * file, const char * buf, size_t len, 
   /* if ((*off) > 0) // The application can write in this entry just once !!
         return 0; */
 
-  if (len> MAX_CBUFFER_LEN || len> MAX_KBUF) {
+  if (len> max_size || len> MAX_KBUF) {
     printk(KERN_INFO "fifoproc: not enough space!!\n");
        return -ENOSPC;
   }
@@ -221,8 +240,14 @@ static const struct proc_ops proc_entry_fops = {
     .proc_release = fifoproc_release,    
 };
 
+int init_proc_entry(char * name) {
+
+}
+
 int init_fifoproc_module( void )
 {
+    struct proc_dir_entry * proc_entry;
+
     if (max_entries < 1) {
         printk(KERN_INFO "fifoproc: max_entries must be greater than 0\n");
         return -EINVAL;
@@ -234,29 +259,32 @@ int init_fifoproc_module( void )
     if (!max_size || (max_size & (max_size - 1) )) { 
         printk(KERN_INFO "fifoproc: max_size must be a power of 2\n");
         return -EINVAL;
-    }
+    }    
 
-    sema_init(&mtx, 1);
-    sema_init(&sem_cons, 0);
-    sema_init(&sem_prod, 0);
-
-    if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
-        printk(KERN_INFO "fifoproc: Can't allocate memory to fifo\n");
+    multififo_dir = proc_mkdir("multififo", NULL);
+    if (multififo_dir == NULL) {
+        printk(KERN_INFO "fifoproc: Can't create /proc/multififo directory\n");
         return -ENOMEM;
     }
 
-    proc_entry = proc_create( "fifoproc", 0666, NULL, &proc_entry_fops);
+    proc_entry = proc_create("admin", 0666, multififo_dir, &admin_entry_fops);
     if (proc_entry == NULL) {
-        kfifo_free(&cbuffer);
-        printk(KERN_INFO "fifoproc: Can't create /proc entry\n");
+        remove_proc_entry("multififo", NULL);
+        printk(KERN_INFO "fifoproc: Can't create /proc/multififo/admin entry\n");
         return -ENOMEM;
-    } else {
-        printk(KERN_INFO "fifoproc: Module loaded\n");
     }
+
+    if ( init_proc_entry("test") ) {
+        remove_proc_entry("admin", multififo_dir);
+        remove_proc_entry("multififo", NULL);
+        printk(KERN_INFO "fifoproc: Can't create /proc/multififo/test entry\n");
+        return -ENOMEM;
+    }
+
+    printk(KERN_INFO "fifoproc: Module loaded\n");
+    
     return 0;
-
 }
-
 
 void exit_fifoproc_module( void )
 {
