@@ -3,6 +3,7 @@
 #include <linux/proc_fs.h>
 #include <linux/kfifo.h>
 #include <linux/uaccess.h>
+#include <linux/list.h>
 
 MODULE_LICENSE("GPL");
 
@@ -19,32 +20,24 @@ MODULE_PARM_DESC(max_size, "Max size of circular number (must be power of 2)");
 
 static struct proc_dir_entry *multififo_dir;
 
-static struct list_element {
+struct list_element {
     int prod_count, cons_count, nr_prod_waiting, nr_cons_waiting;
     struct kfifo cbuffer;
     struct semaphore mtx;
     struct semaphore sem_prod;
     struct semaphore sem_cons;
+    char * entry_name;
+    int abierto; // Controla que la entrada no pueda ser borrada si está abierta
 };
 
-/*int prod_count=0,cons_count=0;
-struct kfifo cbuffer;
-struct semaphore mtx;
-struct semaphore sem_prod;
-struct semaphore sem_cons;
-int nr_prod_waiting=0;
-int nr_cons_waiting=0;
+/* Nodos de la lista */
+struct list_item {
+    struct list_element * data;
+    struct list_head links;
+};
 
-sema_init(&mtx, 1);
-sema_init(&sem_cons, 0);
-sema_init(&sem_prod, 0);
-
-if ( kfifo_alloc(&cbuffer, MAX_CBUFFER_LEN, GFP_KERNEL) ) {
-    printk(KERN_INFO "fifoproc: Can't allocate memory to fifo\n");
-    return -ENOMEM;
-}
-
-*/
+LIST_HEAD(entry_list);
+DEFINE_SPINLOCK(sp);
 
 static int fifoproc_open(struct inode * inode, struct file * file) {
   if (down_interruptible(&mtx)) {
@@ -240,9 +233,130 @@ static const struct proc_ops proc_entry_fops = {
     .proc_release = fifoproc_release,    
 };
 
-int init_proc_entry(char * name) {
+static int init_proc_entry(char * name) {
+    struct list_item * item;
+    struct list_element * element = vmalloc(sizeof(struct list_element));
+
+    if (!element) {
+        printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
+        return -ENOMEM;
+    }
+    element->prod_count = element->cons_count = element->nr_cons_waiting = element->nr_prod_waiting = element->abierto = 0;
+    
+    element->entry_name = vmalloc(strlen(name) + 1);
+    if (!element->entry_name) {
+        printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
+        vfree(element);
+        return -ENOMEM;
+    }
+    strcpy(element->entry_name, name);
+
+    sema_init(&element->mtx);
+    sema_init(&element->sem_cons);
+    sema_init(&element->sem_prod);
+
+    if ( kfifo_alloc(&element->cbuffer, max_size, GFP_KERNEL) ) {
+        printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
+        vfree(element->entry_name);
+        vfree(element);
+        return -ENOMEM;
+    }
+
+    if ( proc_create_data(name, 0666, multififo_dir, &proc_entry_fops, element) ) {        
+        printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
+        kfifo_free(&element->cbuffer);
+        vfree(element->entry_name);
+        vfree(element);
+        return -ENOMEM;
+    }
+
+    item = vmalloc(sizeof(struct list_item));
+    if (!item) {
+      printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
+      kfifo_free(&element->cbuffer);
+      vfree(element->entry_name);
+      vfree(element);
+      return -ENOMEM;
+    }
+    item->data = element;
+
+    spin_lock(&sp);
+    list_add_tail(&item->links, &entry_list);
+    spin_unlock(&sp);
+    
+    printk(KERN_INFO "fifoproc: Entry %s created\n", name);
+    return 0;
+}
+
+static void clean_list_element(struct list_element * element) {
+    kfifo_reset(&element->cbuffer);
+    kfifo_free(&element->cbuffer);
+    remove_proc_entry(element->entry_name, multififo_dir);
+    vfree(entry_name);
+    vfree(element);
+}
+
+static int delete_proc_entry(char * name) {
+    struct list_head *pos;
+    struct list_item* item=NULL;
+    struct list_element * element;
+    int encontrado = 0;
+
+    spin_lock(&sp);
+
+    list_for_each_safe(pos,&entry_list){
+      item = list_entry(pos, struct list_item, links);
+      if (strcmp(name, item->data->entry_name) == 0) {
+        encontrado = 1;
+
+        if (item->data->abierto) {
+            spin_unlock(&sp);
+            printk(KERN_INFO "fifoproc: Cannot remove entry %s\n while opened", name);
+            return -EPERM;
+        }
+
+        list_del(pos);
+
+        break;        
+        }
+    }
+
+    spin_unlock(&sp);
+
+    if (!encontrado) {
+        printk(KERN_INFO "fifoproc: Entry %s not found\n", name);
+        return -EINVAL;
+    }
+
+    element = item->data;
+    vfree(item); // No estoy seguro de que esto no vaya a dar errores
+    clean_list_element(element);
+    printk(KERN_INFO "fifoproc: Deleted entry %s\n", name);    
+
+    return 0;
+}
+
+static int cleanup() {
+    struct list_head* pos, * e;
+    struct list_item* item = NULL;
+
+    spin_lock(&sp);
+    list_for_each_safe(pos, e, &entry_list) {
+        item = list_entry(pos, struct list_item, links);
+
+        if (item->data->abierto) {
+            spin_unlock(&sp);
+            printk(KERN_INFO "fifoproc: Cannot remove entry %s\n while opened", name);
+            return -EPERM;
+        }
+        list_del(pos);
+            vfree(item);
+            printk(KERN_INFO "modlist: Elemento %d borrado\n", numero);
+        }
+    }
 
 }
+
 
 int init_fifoproc_module( void )
 {
