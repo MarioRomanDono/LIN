@@ -20,19 +20,19 @@ MODULE_PARM_DESC(max_size, "Max size of circular number (must be power of 2)");
 
 static struct proc_dir_entry *multififo_dir;
 
-struct list_element {
+struct proc_dir_entry_data {
     int prod_count, cons_count, nr_prod_waiting, nr_cons_waiting;
     struct kfifo cbuffer;
     struct semaphore mtx;
     struct semaphore sem_prod;
     struct semaphore sem_cons;
-    char * entry_name;
-    int abierto; // Controla que la entrada no pueda ser borrada si está abierta
 };
 
 /* Nodos de la lista */
 struct list_item {
-    struct list_element * data;
+    struct proc_dir_entry * entry;
+    struct proc_dir_entry_data * data;
+    char * name;
     struct list_head links;
 };
 
@@ -107,11 +107,6 @@ static ssize_t fifoproc_write(struct file * file, const char * buf, size_t len, 
     printk(KERN_INFO "fifoproc: not enough space!!\n");
        return -ENOSPC;
   }
-
-  /* if (copy_from_user( &kbuffer[0], buf, len ))  {
-            return -EFAULT; 
-  }  
-  *off+=len;  */
 
   if (copy_from_user( kbuffer, buf, len ))  {
             return -EFAULT; 
@@ -196,8 +191,6 @@ static ssize_t fifoproc_read(struct file * file, char* buff, size_t len, loff_t 
   return len;
 }
 
-
-
 static int fifoproc_release(struct inode * inode, struct file * file) {
   if (down_interruptible(&mtx)) {
     return -EINTR;
@@ -234,87 +227,92 @@ static const struct proc_ops proc_entry_fops = {
 };
 
 static int init_proc_entry(char * name) {
+    struct proc_dir_entry * entry;
     struct list_item * item;
-    struct list_element * element = vmalloc(sizeof(struct list_element));
+    struct proc_dir_entry_data * data = vmalloc(sizeof(struct proc_dir_entry_data));
 
-    if (!element) {
+    // Se inicializa la estructura privada de la entrada /proc
+    if (!data) {
         printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
         return -ENOMEM;
     }
-    element->prod_count = element->cons_count = element->nr_cons_waiting = element->nr_prod_waiting = element->abierto = 0;
-    
-    element->entry_name = vmalloc(strlen(name) + 1);
-    if (!element->entry_name) {
-        printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
-        vfree(element);
-        return -ENOMEM;
-    }
-    strcpy(element->entry_name, name);
+    data->prod_count = data->cons_count = data->nr_cons_waiting = data->nr_prod_waiting = 0;
 
-    sema_init(&element->mtx);
-    sema_init(&element->sem_cons);
-    sema_init(&element->sem_prod);
+    sema_init(&data->mtx, 1);
+    sema_init(&data->sem_cons, 0);
+    sema_init(&data->sem_prod, 0);
 
-    if ( kfifo_alloc(&element->cbuffer, max_size, GFP_KERNEL) ) {
+    if ( kfifo_alloc(&data->cbuffer, max_size, GFP_KERNEL) ) {
         printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
-        vfree(element->entry_name);
-        vfree(element);
+        vfree(data);
         return -ENOMEM;
     }
 
-    if ( proc_create_data(name, 0666, multififo_dir, &proc_entry_fops, element) ) {        
+    // Se crea la entrada /proc
+    entry = proc_create_data(name, 0666, multififo_dir, &proc_entry_fops, data);
+    if (!entry) {        
         printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
-        kfifo_free(&element->cbuffer);
-        vfree(element->entry_name);
-        vfree(element);
+        kfifo_free(&data->cbuffer);
+        vfree(data);
         return -ENOMEM;
     }
 
+    // Se añade a la lista dicha entrada
     item = vmalloc(sizeof(struct list_item));
     if (!item) {
       printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
-      kfifo_free(&element->cbuffer);
-      vfree(element->entry_name);
-      vfree(element);
+      kfifo_free(&data->cbuffer);
+      vfree(data);
+      remove_proc_entry(name, multififo_dir);
       return -ENOMEM;
     }
-    item->data = element;
+
+    item->entry = entry;
+    item->data = data;
+    item->name = vmalloc(strlen(name) + 1);
+    if (!item->name) {
+      printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
+      kfifo_free(&data->cbuffer);
+      vfree(data);
+      vfree(item);
+      remove_proc_entry(name, multififo_dir);
+      return -ENOMEM;
+    }
+    strcpy(item->name, name);
 
     spin_lock(&sp);
     list_add_tail(&item->links, &entry_list);
     spin_unlock(&sp);
-    
+
+    entry_counter++;
     printk(KERN_INFO "fifoproc: Entry %s created\n", name);
     return 0;
 }
 
-static void clean_list_element(struct list_element * element) {
-    kfifo_reset(&element->cbuffer);
-    kfifo_free(&element->cbuffer);
-    remove_proc_entry(element->entry_name, multififo_dir);
-    vfree(entry_name);
-    vfree(element);
-}
-
 static int delete_proc_entry(char * name) {
-    struct list_head *pos;
+    struct list_head *pos, * e;
     struct list_item* item=NULL;
-    struct list_element * element;
+    struct proc_dir_entry * entry;
+    struct proc_dir_entry_data * data;
     int encontrado = 0;
 
     spin_lock(&sp);
 
-    list_for_each_safe(pos,&entry_list){
+    list_for_each_safe(pos, e, &entry_list){
       item = list_entry(pos, struct list_item, links);
-      if (strcmp(name, item->data->entry_name) == 0) {
+      if (strcmp(name, item->name) == 0) {
         encontrado = 1;
 
-        if (item->data->abierto) {
+        /*
+        // Se comprueba si la entrada está siendo usada antes de borrarse
+        if (atomic_read(item->in_use)) {
             spin_unlock(&sp);
             printk(KERN_INFO "fifoproc: Cannot remove entry %s\n while opened", name);
             return -EPERM;
-        }
+        } */
 
+        entry = item->entry;
+        data = item->data;
         list_del(pos);
 
         break;        
@@ -328,35 +326,18 @@ static int delete_proc_entry(char * name) {
         return -EINVAL;
     }
 
-    element = item->data;
-    vfree(item); // No estoy seguro de que esto no vaya a dar errores
-    clean_list_element(element);
+    kfifo_reset(&data->cbuffer);
+    kfifo_free(&data->cbuffer);
+    vfree(data); // Liberar memoria de la estructura asociada a la entrada /proc
+    remove_proc_entry(item->name, multififo_dir);
+    vfree(item->name);
+    vfree(item); // Liberar memoria asociada al elemento de la lista
+
+    entry_counter--;
     printk(KERN_INFO "fifoproc: Deleted entry %s\n", name);    
 
     return 0;
 }
-
-static int cleanup() {
-    struct list_head* pos, * e;
-    struct list_item* item = NULL;
-
-    spin_lock(&sp);
-    list_for_each_safe(pos, e, &entry_list) {
-        item = list_entry(pos, struct list_item, links);
-
-        if (item->data->abierto) {
-            spin_unlock(&sp);
-            printk(KERN_INFO "fifoproc: Cannot remove entry %s\n while opened", name);
-            return -EPERM;
-        }
-        list_del(pos);
-            vfree(item);
-            printk(KERN_INFO "modlist: Elemento %d borrado\n", numero);
-        }
-    }
-
-}
-
 
 int init_fifoproc_module( void )
 {
@@ -402,10 +383,48 @@ int init_fifoproc_module( void )
 
 void exit_fifoproc_module( void )
 {
-  kfifo_reset(&cbuffer);
-  kfifo_free(&cbuffer);
-  remove_proc_entry("fifoproc", NULL);
-  printk(KERN_INFO "fifoproc: Module unloaded.\n");
+    struct list_item* item = NULL;
+    struct proc_dir_entry * entry;
+    struct proc_dir_entry_data * data;
+    int quedan_elementos = 1;
+
+    while (quedan_elementos) {
+        spin_lock(&sp);
+
+        if (list_empty(&entry_list)) {
+            spin_unlock(&sp);
+            quedan_elementos = 0;
+        }
+        else {
+            item = list_first_entry(&entry_list, struct list_item, links);
+ 
+            /*
+            // Se comprueba si la entrada está siendo usada antes de borrarse
+            if (atomic_read(item->in_use)) {
+                spin_unlock(&sp);
+                printk(KERN_INFO "fifoproc: Cannot remove entry %s\n while opened", item->name);
+            } */
+
+            entry = item->entry;
+            data = item->data;
+            list_del(entry_list.next);
+
+            spin_unlock(&sp);
+
+            kfifo_reset(&data->cbuffer);
+            kfifo_free(&data->cbuffer);
+            vfree(data);// Liberar memoria de la estructura asociada a la entrada /proc
+            remove_proc_entry(item->name, multififo_dir);
+            vfree(item->name);
+            vfree(item); // Liberar memoria asociada al elemento de la lista
+
+            entry_counter--;
+        }
+    }
+
+    remove_proc_entry("admin", multififo_dir);
+    remove_proc_entry("multififo", NULL); 
+    printk(KERN_INFO "fifoproc: Module unloaded\n");
 }
 
 
