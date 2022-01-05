@@ -7,7 +7,7 @@
 
 MODULE_LICENSE("GPL");
 
-#define MAX_KBUF 1024
+#define MAX_KBUF 256
 
 static int max_entries = 5;
 static int max_size = 32;
@@ -40,183 +40,191 @@ LIST_HEAD(entry_list);
 DEFINE_SPINLOCK(sp);
 
 static int fifoproc_open(struct inode * inode, struct file * file) {
-  if (down_interruptible(&mtx)) {
-    return -EINTR;
-  }
+    struct proc_dir_entry_data * private_data = (struct proc_dir_entry_data *) PDE_DATA(file->f_inode);
 
-  if (file->f_mode & FMODE_READ) { // Consumidor
-    cons_count++;
-
-    if (nr_prod_waiting > 0) {
-      up(&sem_prod);
-      nr_prod_waiting--;
+    if (down_interruptible(&private_data->mtx)) {
+        return -EINTR;
     }
 
-    /* Esperar hasta que el productor abra su extremo de escritura */
-    while (prod_count == 0) {
-      nr_cons_waiting++;
-      up(&mtx);
-      if (down_interruptible(&sem_cons)) {
-        down(&mtx);
-        nr_cons_waiting--;
-        cons_count--;
-        up(&mtx);
-        return -EINTR;
-      }
-      if (down_interruptible(&mtx)) {
-        return -EINTR;
-      }
-    }
-  }
-  else { //Productor
-    prod_count++;
+    if (file->f_mode & FMODE_READ) { // Consumidor
+        private_data->cons_count++;
 
-    if (nr_cons_waiting > 0) {
-      up(&sem_cons);
-      nr_cons_waiting--;
+        if (private_data->nr_prod_waiting > 0) {
+            up(&private_data->sem_prod);
+            private_data->nr_prod_waiting--;
+        }
+
+        /* Esperar hasta que el productor abra su extremo de escritura */
+        while (private_data->cons_count == 0) {
+            private_data->nr_cons_waiting++;
+            up(&private_data->mtx);
+            if (down_interruptible(&private_data->sem_cons)) {
+                down(&private_data->mtx);
+                private_data->nr_cons_waiting--;
+                private_data->cons_count--;
+                up(&private_data->mtx);
+                return -EINTR;
+            }
+            if (down_interruptible(&private_data->mtx)) {
+                return -EINTR;
+            }
+        }
+    }
+    else { //Productor
+        private_data->cons_count++;
+
+        if (private_data->nr_cons_waiting > 0) {
+          up(&private_data->sem_cons);
+          private_data->nr_cons_waiting--;
+        }
+
+        /* Esperar hasta que el consumidor abra su extremo de escritura */
+        while (private_data->cons_count == 0) {
+            private_data->nr_prod_waiting++;
+            up(&private_data->mtx);
+            if (down_interruptible(&private_data->sem_prod)) {
+                down(&private_data->mtx);
+                private_data->nr_prod_waiting--;
+                private_data->cons_count--;
+                up(&private_data->mtx);
+                return -EINTR;
+            }
+            if (down_interruptible(&private_data->mtx)) {
+                return -EINTR;
+            }
+            }
     }
 
-    /* Esperar hasta que el consumidor abra su extremo de escritura */
-    while (cons_count == 0) {
-      nr_prod_waiting++;
-      up(&mtx);
-      if (down_interruptible(&sem_prod)) {
-        down(&mtx);
-        nr_prod_waiting--;
-        prod_count--;
-        up(&mtx);
-        return -EINTR;
-      }
-      if (down_interruptible(&mtx)) {
-        return -EINTR;
-      }
-    }
-  }
-
-  up(&mtx);
-  return 0;
+    up(&private_data->mtx);
+    return 0;
 }
 
 static ssize_t fifoproc_write(struct file * file, const char * buf, size_t len, loff_t * off) {
-  char kbuffer[MAX_KBUF];
+    struct proc_dir_entry_data * private_data = (struct proc_dir_entry_data *) PDE_DATA(file->f_inode);
 
-  /* if ((*off) > 0) // The application can write in this entry just once !!
+    char kbuffer[MAX_KBUF];
+
+    /* if ((*off) > 0) // The application can write in this entry just once !!
         return 0; */
 
-  if (len > max_size || len> MAX_KBUF) {
-    printk(KERN_INFO "fifoproc: not enough space!!\n");
-    return -ENOSPC;
-  }
-
-  if (copy_from_user( kbuffer, buf, len ))  {
-            return -EFAULT; 
-  }
-  kbuffer[len] = '\0'; //Add the `\0' 
-  
-  if (down_interruptible(&mtx)) {
-    return -EINTR;
-  }
-
-  /* Esperar hasta que haya hueco para insertar (debe haber consumidores) */
-  while (kfifo_avail(&cbuffer)<len && cons_count>0 ){
-    nr_prod_waiting++;
-    up(&mtx);
-    if (down_interruptible(&sem_prod)) {
-      down(&mtx);
-      nr_prod_waiting--;
-      up(&mtx);
-      return -EINTR;
+    if (len > max_size || len> MAX_KBUF) {
+        printk(KERN_INFO "fifoproc: not enough space!!\n");
+        return -ENOSPC;
     }
-    if (down_interruptible(&mtx)) {
-      return -EINTR;
+
+    if (copy_from_user( kbuffer, buf, len ))  {
+        return -EFAULT; 
     }
-  }
-  /* Detectar fin de comunicación por error (consumidor cierra FIFO antes) */
-  if (cons_count==0) {up(&mtx); return -EPIPE;}
+    kbuffer[len] = '\0'; //Add the `\0' 
 
-  kfifo_in(&cbuffer,kbuffer,len);
+    if (down_interruptible(&private_data->mtx)) {
+        return -EINTR;
+    }
 
-  /* Despertar a posible consumidor bloqueado */
-  if (nr_cons_waiting > 0) {
-    up(&sem_cons);
-    nr_cons_waiting--;
-  }
+    /* Esperar hasta que haya hueco para insertar (debe haber consumidores) */
+    while (kfifo_avail(&private_data->cbuffer)<len && private_data->cons_count>0 ){
+        private_data->nr_prod_waiting++;
+        up(&private_data->mtx);
+        if (down_interruptible(&private_data->sem_prod)) {
+            down(&private_data->mtx);
+            private_data->nr_prod_waiting--;
+            up(&private_data->mtx);
+            return -EINTR;
+        }
+        if (down_interruptible(&private_data->mtx)) {
+            return -EINTR;
+        }
+    }
+    /* Detectar fin de comunicación por error (consumidor cierra FIFO antes) */
+    if (private_data->cons_count==0) {up(&private_data->mtx); return -EPIPE;}
 
-  up(&mtx);
-  return len;
+    kfifo_in(&private_data->cbuffer,kbuffer,len);
+
+    /* Despertar a posible consumidor bloqueado */
+    if (private_data->nr_cons_waiting > 0) {
+        up(&private_data->sem_cons);
+        private_data->nr_cons_waiting--;
+    }
+
+    up(&private_data->mtx);
+    return len;
 }
 
 static ssize_t fifoproc_read(struct file * file, char* buff, size_t len, loff_t * off) {
-  char kbuffer[MAX_KBUF];
-  int nBytes;
+    struct proc_dir_entry_data * private_data = (struct proc_dir_entry_data *) PDE_DATA(file->f_inode);
 
-  if ((*off) > 0) /* Tell the application that there is nothing left to read */
-      return 0;
-  
-  if (down_interruptible(&mtx)) {
-    return -EINTR;
-  }
-  /* Esperar hasta que el buffer contenga más bytes que los solicitados mediante read (debe haber productores) */
-  while (kfifo_len(&cbuffer)<len && prod_count>0 ){
-    nr_cons_waiting++;
-    up(&mtx);
-    if (down_interruptible(&sem_cons)) {
-      down(&mtx);
-      nr_cons_waiting--;
-      up(&mtx);
-      return -EINTR;
-    }
-    if (down_interruptible(&mtx)) {
-      return -EINTR;
-    }
-  }
-  /* Detectar fin de comunicación correcto (el extremo de escritura ha sido cerrado) */
-  if (kfifo_is_empty(&cbuffer) && prod_count==0) {
-    up(&mtx);
+    char kbuffer[MAX_KBUF];
+    int nBytes;
+
+    if ((*off) > 0) /* Tell the application that there is nothing left to read */
     return 0;
-  }
 
-  nBytes = kfifo_out(&cbuffer,kbuffer,len);
+    if (down_interruptible(&private_data->mtx)) {
+        return -EINTR;
+    }
+    /* Esperar hasta que el buffer contenga más bytes que los solicitados mediante read (debe haber productores) */
+    while (kfifo_len(&private_data->cbuffer)<len && private_data->cons_count>0 ){
+        private_data->nr_cons_waiting++;
+        up(&private_data->mtx);
+        if (down_interruptible(&private_data->sem_cons)) {
+            down(&private_data->mtx);
+            private_data->nr_cons_waiting--;
+            up(&private_data->mtx);
+            return -EINTR;
+        }
+        if (down_interruptible(&private_data->mtx)) {
+            return -EINTR;
+        }
+    }
+    /* Detectar fin de comunicación correcto (el extremo de escritura ha sido cerrado) */
+    if (kfifo_is_empty(&private_data->cbuffer) && private_data->cons_count==0) {
+        up(&private_data->mtx);
+        return 0;
+    }
 
-  /* Despertar a posible productor bloqueado */
-  if (nr_prod_waiting > 0) {
-    up(&sem_prod);
-    nr_prod_waiting--;
-  }
+    nBytes = kfifo_out(&private_data->cbuffer,kbuffer,len);
 
-  if (copy_to_user(buff,kbuffer,len)) {up(&mtx); return -EFAULT;}
+    /* Despertar a posible productor bloqueado */
+    if (private_data->nr_prod_waiting > 0) {
+        up(&private_data->sem_prod);
+        private_data->nr_prod_waiting--;
+    }
 
-  up(&mtx);
-  // (*off)+=len;  /* Update the file pointer */
-  return len;
+    if (copy_to_user(buff,kbuffer,len)) {up(&private_data->mtx); return -EFAULT;}
+
+    up(&private_data->mtx);
+    // (*off)+=len;  /* Update the file pointer */
+    return len;
 }
 
 static int fifoproc_release(struct inode * inode, struct file * file) {
-  if (down_interruptible(&mtx)) {
-    return -EINTR;
-  }
+    struct proc_dir_entry_data * private_data = (struct proc_dir_entry_data*)PDE_DATA(file->f_inode);
 
-  if (file->f_mode & FMODE_READ) { // Consumidor        
-    cons_count--;
-    if (nr_prod_waiting > 0) {
-      up(&sem_prod);
-      nr_prod_waiting--;
+    if (down_interruptible(&private_data->mtx)) {
+        return -EINTR;
     }
-  }
-  else { // Productor
-    prod_count--;
-    if (nr_cons_waiting > 0) {
-      up(&sem_cons);
-      nr_cons_waiting--;
+
+    if (file->f_mode & FMODE_READ) { // Consumidor        
+        private_data->cons_count--;
+        if (private_data->nr_prod_waiting > 0) {
+            up(&private_data->sem_prod);
+            private_data->nr_prod_waiting--;
+        }
     }
-  }
+    else { // Productor
+        private_data->cons_count--;
+        if (private_data->nr_cons_waiting > 0) {
+            up(&private_data->sem_cons);
+            private_data->nr_cons_waiting--;
+        }
+    }
 
-  if (prod_count == 0 && cons_count == 0) {
-      kfifo_reset(&cbuffer);
-  }
+    if (private_data->cons_count == 0 && private_data->cons_count == 0) {
+        kfifo_reset(&private_data->cbuffer);
+    }
 
-  up(&mtx);
-  return 0;
+    up(&private_data->mtx);
+    return 0;
 }
 
 static const struct proc_ops proc_entry_fops = {
@@ -269,28 +277,28 @@ static int init_proc_entry(char * name) {
       vfree(data);
       remove_proc_entry(name, multififo_dir);
       return -ENOMEM;
-    }
+  }
 
-    item->entry = entry;
-    item->data = data;
-    item->name = vmalloc(strlen(name) + 1);
-    if (!item->name) {
+  item->entry = entry;
+  item->data = data;
+  item->name = vmalloc(strlen(name) + 1);
+  if (!item->name) {
       printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
       kfifo_free(&data->cbuffer);
       vfree(data);
       vfree(item);
       remove_proc_entry(name, multififo_dir);
       return -ENOMEM;
-    }
-    strcpy(item->name, name);
+  }
+  strcpy(item->name, name);
 
-    spin_lock(&sp);
-    list_add_tail(&item->links, &entry_list);
-    spin_unlock(&sp);
+  spin_lock(&sp);
+  list_add_tail(&item->links, &entry_list);
+  spin_unlock(&sp);
 
-    entry_counter++;
-    printk(KERN_INFO "fifoproc: Entry %s created\n", name);
-    return 0;
+  entry_counter++;
+  printk(KERN_INFO "fifoproc: Entry %s created\n", name);
+  return 0;
 }
 
 static int delete_proc_entry(char * name) {
@@ -320,18 +328,18 @@ static int delete_proc_entry(char * name) {
         list_del(pos);
 
         break;        
-        }
     }
+}
 
-    spin_unlock(&sp);
+spin_unlock(&sp);
 
-    if (!encontrado) {
-        printk(KERN_INFO "fifoproc: Entry %s not found\n", name);
-        return -EINVAL;
-    }
+if (!encontrado) {
+    printk(KERN_INFO "fifoproc: Entry %s not found\n", name);
+    return -EINVAL;
+}
 
-    kfifo_reset(&data->cbuffer);
-    kfifo_free(&data->cbuffer);
+kfifo_reset(&data->cbuffer);
+kfifo_free(&data->cbuffer);
     vfree(data); // Liberar memoria de la estructura asociada a la entrada /proc
     remove_proc_entry(item->name, multififo_dir);
     vfree(item->name);
@@ -357,7 +365,7 @@ static ssize_t admin_write(struct file * file, const char * buf, size_t len, lof
     }
 
     if (copy_from_user( kbuf, buf, len ))  {
-            return -EFAULT; 
+        return -EFAULT; 
     }
     kbuf[len] = '\0'; //Add the `\0'
 
@@ -446,7 +454,7 @@ void exit_fifoproc_module( void )
         }
         else {
             item = list_first_entry(&entry_list, struct list_item, links);
- 
+
             /*
             // Se comprueba si la entrada está siendo usada antes de borrarse
             if (atomic_read(item->in_use)) {
