@@ -103,9 +103,9 @@ static ssize_t fifoproc_write(struct file * file, const char * buf, size_t len, 
   /* if ((*off) > 0) // The application can write in this entry just once !!
         return 0; */
 
-  if (len> max_size || len> MAX_KBUF) {
+  if (len > max_size || len> MAX_KBUF) {
     printk(KERN_INFO "fifoproc: not enough space!!\n");
-       return -ENOSPC;
+    return -ENOSPC;
   }
 
   if (copy_from_user( kbuffer, buf, len ))  {
@@ -226,6 +226,10 @@ static const struct proc_ops proc_entry_fops = {
     .proc_release = fifoproc_release,    
 };
 
+/***********************************************************************************
+*************************** PARTE NUEVA DE LA PRÁCTICA *****************************
+************************************************************************************/
+
 static int init_proc_entry(char * name) {
     struct proc_dir_entry * entry;
     struct list_item * item;
@@ -338,6 +342,51 @@ static int delete_proc_entry(char * name) {
 
     return 0;
 }
+
+static ssize_t admin_write(struct file * file, const char * buf, size_t len, loff_t * off) {
+    char kbuf[MAX_KBUF];
+    char entry[MAX_KBUF];
+    int res = 0;
+
+    if ((*off) > 0) // The application can write in this entry just once !!
+        return 0;
+
+    if (len> MAX_KBUF) {
+        printk(KERN_INFO "fifoproc: not enough space!!\n");
+        return -ENOSPC;
+    }
+
+    if (copy_from_user( kbuf, buf, len ))  {
+            return -EFAULT; 
+    }
+    kbuf[len] = '\0'; //Add the `\0'
+
+    if (sscanf(kbuf, "new %s", entry) == 1) {
+        res = init_proc_entry(entry);
+        if (res) {
+            printk(KERN_INFO "fifoproc: cannot create %s entry", entry);
+            return res;
+        }
+    }
+    else if (sscanf(kbuf, "delete %s", entry) == 1) {
+        res = delete_proc_entry(entry);
+        if (res) {
+            printk(KERN_INFO "fifoproc: cannot delete %s entry", entry);
+            return res;
+        }
+    }
+    else {
+        printk(KERN_INFO "fifoproc: invalid argument");
+        return -EINVAL;
+    }
+
+    (*off) += len;
+    return len;
+}
+
+static const struct proc_ops admin_entry_fops = {
+    .proc_write = admin_write
+};
 
 int init_fifoproc_module( void )
 {
