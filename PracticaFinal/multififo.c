@@ -157,7 +157,7 @@ static ssize_t fifoproc_read(struct file * file, char* buff, size_t len, loff_t 
     int nBytes;
 
     if ((*off) > 0) /* Tell the application that there is nothing left to read */
-    return 0;
+        return 0;
 
     if (down_interruptible(&private_data->mtx)) {
         return -EINTR;
@@ -331,15 +331,15 @@ static int delete_proc_entry(char * name) {
     }
 }
 
-spin_unlock(&sp);
+    spin_unlock(&sp);
 
-if (!encontrado) {
-    printk(KERN_INFO "fifoproc: Entry %s not found\n", name);
-    return -EINVAL;
-}
+    if (!encontrado) {
+        printk(KERN_INFO "fifoproc: Entry %s not found\n", name);
+        return -EINVAL;
+    }
 
-kfifo_reset(&data->cbuffer);
-kfifo_free(&data->cbuffer);
+    kfifo_reset(&data->cbuffer);
+    kfifo_free(&data->cbuffer);
     vfree(data); // Liberar memoria de la estructura asociada a la entrada /proc
     remove_proc_entry(item->name, multififo_dir);
     vfree(item->name);
@@ -370,6 +370,10 @@ static ssize_t admin_write(struct file * file, const char * buf, size_t len, lof
     kbuf[len] = '\0'; //Add the `\0'
 
     if (sscanf(kbuf, "new %s", entry) == 1) {
+        if (entry_counter >= max_entries) {
+            printk(KERN_INFO "fifoproc: cannot create more than %d entries", max_entries);
+            return -EPERM;
+        }
         res = init_proc_entry(entry);
         if (res) {
             printk(KERN_INFO "fifoproc: cannot create %s entry", entry);
