@@ -39,8 +39,15 @@ struct list_item {
 LIST_HEAD(entry_list);
 DEFINE_SPINLOCK(sp);
 
+void noinline trace_private_data(int value) { asm(" "); };
+
 static int fifoproc_open(struct inode * inode, struct file * file) {
     struct proc_dir_entry_data * private_data = (struct proc_dir_entry_data *) PDE_DATA(file->f_inode);
+
+    trace_private_data(private_data->cons_count);
+    trace_private_data(private_data->prod_count);
+    trace_private_data(private_data->nr_prod_waiting);
+    trace_private_data(private_data->nr_cons_waiting);
 
     if (down_interruptible(&private_data->mtx)) {
         return -EINTR;
@@ -108,6 +115,7 @@ static ssize_t fifoproc_write(struct file * file, const char * buf, size_t len, 
         return 0; */
 
     if (len > max_size || len> MAX_KBUF) {
+        trace_private_data(len);
         printk(KERN_INFO "fifoproc: not enough space!!\n");
         return -ENOSPC;
     }
@@ -249,6 +257,11 @@ static int init_proc_entry(char * name) {
         return -ENOMEM;
     }
     data->prod_count = data->cons_count = data->nr_cons_waiting = data->nr_prod_waiting = 0;
+
+    trace_private_data(data->cons_count);
+    trace_private_data(data->prod_count);
+    trace_private_data(data->nr_prod_waiting);
+    trace_private_data(data->nr_cons_waiting);
 
     sema_init(&data->mtx, 1);
     sema_init(&data->sem_cons, 0);
