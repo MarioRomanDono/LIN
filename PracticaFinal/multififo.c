@@ -44,11 +44,6 @@ void noinline trace_private_data(int value) { asm(" "); };
 static int fifoproc_open(struct inode * inode, struct file * file) {
     struct proc_dir_entry_data * private_data = (struct proc_dir_entry_data *) PDE_DATA(file->f_inode);
 
-    trace_private_data(private_data->cons_count);
-    trace_private_data(private_data->prod_count);
-    trace_private_data(private_data->nr_prod_waiting);
-    trace_private_data(private_data->nr_cons_waiting);
-
     if (down_interruptible(&private_data->mtx)) {
         return -EINTR;
     }
@@ -258,11 +253,6 @@ static int init_proc_entry(char * name) {
     }
     data->prod_count = data->cons_count = data->nr_cons_waiting = data->nr_prod_waiting = 0;
 
-    trace_private_data(data->cons_count);
-    trace_private_data(data->prod_count);
-    trace_private_data(data->nr_prod_waiting);
-    trace_private_data(data->nr_cons_waiting);
-
     sema_init(&data->mtx, 1);
     sema_init(&data->sem_cons, 0);
     sema_init(&data->sem_prod, 0);
@@ -285,33 +275,33 @@ static int init_proc_entry(char * name) {
     // Se añade a la lista dicha entrada
     item = vmalloc(sizeof(struct list_item));
     if (!item) {
-      printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
-      kfifo_free(&data->cbuffer);
-      vfree(data);
-      remove_proc_entry(name, multififo_dir);
-      return -ENOMEM;
-  }
+        printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
+        kfifo_free(&data->cbuffer);
+        vfree(data);
+        remove_proc_entry(name, multififo_dir);
+        return -ENOMEM;
+    }
 
-  item->entry = entry;
-  item->data = data;
-  item->name = vmalloc(strlen(name) + 1);
-  if (!item->name) {
+    item->entry = entry;
+    item->data = data;
+    item->name = vmalloc(strlen(name) + 1);
+    if (!item->name) {
       printk(KERN_INFO "fifoproc: Could not create %s entry\n", name);
       kfifo_free(&data->cbuffer);
       vfree(data);
       vfree(item);
       remove_proc_entry(name, multififo_dir);
       return -ENOMEM;
-  }
-  strcpy(item->name, name);
+    }
+    strcpy(item->name, name);
 
-  spin_lock(&sp);
-  list_add_tail(&item->links, &entry_list);
-  spin_unlock(&sp);
+    spin_lock(&sp);
+    list_add_tail(&item->links, &entry_list);
+    spin_unlock(&sp);
 
-  entry_counter++;
-  printk(KERN_INFO "fifoproc: Entry %s created\n", name);
-  return 0;
+    entry_counter++;
+    printk(KERN_INFO "fifoproc: Entry %s created\n", name);
+    return 0;
 }
 
 static int delete_proc_entry(char * name) {
@@ -327,14 +317,6 @@ static int delete_proc_entry(char * name) {
       item = list_entry(pos, struct list_item, links);
       if (strcmp(name, item->name) == 0) {
         encontrado = 1;
-
-        /*
-        // Se comprueba si la entrada está siendo usada antes de borrarse
-        if (atomic_read(item->in_use)) {
-            spin_unlock(&sp);
-            printk(KERN_INFO "fifoproc: Cannot remove entry %s\n while opened", name);
-            return -EPERM;
-        } */
 
         entry = item->entry;
         data = item->data;
@@ -471,13 +453,6 @@ void exit_fifoproc_module( void )
         }
         else {
             item = list_first_entry(&entry_list, struct list_item, links);
-
-            /*
-            // Se comprueba si la entrada está siendo usada antes de borrarse
-            if (atomic_read(item->in_use)) {
-                spin_unlock(&sp);
-                printk(KERN_INFO "fifoproc: Cannot remove entry %s\n while opened", item->name);
-            } */
 
             entry = item->entry;
             data = item->data;
