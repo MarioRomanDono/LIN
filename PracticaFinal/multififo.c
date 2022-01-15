@@ -62,7 +62,7 @@ static int fifoproc_open(struct inode * inode, struct file * file) {
         }
 
         /* Esperar hasta que el productor abra su extremo de escritura */
-        while (private_data->cons_count == 0) {
+        while (private_data->prod_count == 0) {
             private_data->nr_cons_waiting++;
             up(&private_data->mtx);
             if (down_interruptible(&private_data->sem_cons)) {
@@ -171,7 +171,7 @@ static ssize_t fifoproc_read(struct file * file, char* buff, size_t len, loff_t 
         return -EINTR;
     }
     /* Esperar hasta que el buffer contenga más bytes que los solicitados mediante read (debe haber productores) */
-    while (kfifo_len(&private_data->cbuffer)<len && private_data->cons_count>0 ){
+    while (kfifo_len(&private_data->cbuffer)<len && private_data->prod_count>0 ){
         private_data->nr_cons_waiting++;
         up(&private_data->mtx);
         if (down_interruptible(&private_data->sem_cons)) {
@@ -185,7 +185,7 @@ static ssize_t fifoproc_read(struct file * file, char* buff, size_t len, loff_t 
         }
     }
     /* Detectar fin de comunicación correcto (el extremo de escritura ha sido cerrado) */
-    if (kfifo_is_empty(&private_data->cbuffer) && private_data->cons_count==0) {
+    if (kfifo_is_empty(&private_data->cbuffer) && private_data->prod_count==0) {
         up(&private_data->mtx);
         return 0;
     }
@@ -220,14 +220,14 @@ static int fifoproc_release(struct inode * inode, struct file * file) {
         }
     }
     else { // Productor
-        private_data->cons_count--;
+        private_data->prod_count--;
         if (private_data->nr_cons_waiting > 0) {
             up(&private_data->sem_cons);
             private_data->nr_cons_waiting--;
         }
     }
 
-    if (private_data->cons_count == 0 && private_data->cons_count == 0) {
+    if (private_data->cons_count == 0 && private_data->prod_count == 0) {
         kfifo_reset(&private_data->cbuffer);
     }
 
