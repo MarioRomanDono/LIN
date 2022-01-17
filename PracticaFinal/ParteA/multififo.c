@@ -314,17 +314,17 @@ static int delete_proc_entry(char * name) {
     spin_lock(&sp);
 
     list_for_each_safe(pos, e, &entry_list){
-      item = list_entry(pos, struct list_item, links);
-      if (strcmp(name, item->name) == 0) {
-        encontrado = 1;
+        item = list_entry(pos, struct list_item, links);
+        if (strcmp(name, item->name) == 0) {
+            encontrado = 1;
 
-        entry = item->entry;
-        data = item->data;
-        list_del(pos);
+            entry = item->entry;
+            data = item->data;
+            list_del(pos);
 
-        break;        
+            break;        
+        }
     }
-}
 
     spin_unlock(&sp);
 
@@ -333,10 +333,10 @@ static int delete_proc_entry(char * name) {
         return -ENOENT;
     }
 
+    remove_proc_entry(item->name, multififo_dir);
     kfifo_reset(&data->cbuffer);
     kfifo_free(&data->cbuffer);
     vfree(data); // Liberar memoria de la estructura asociada a la entrada /proc
-    remove_proc_entry(item->name, multififo_dir);
     vfree(item->name);
     vfree(item); // Liberar memoria asociada al elemento de la lista
 
@@ -460,10 +460,10 @@ void exit_fifoproc_module( void )
 
             spin_unlock(&sp);
 
+            remove_proc_entry(item->name, multififo_dir);
             kfifo_reset(&data->cbuffer);
             kfifo_free(&data->cbuffer);
             vfree(data);// Liberar memoria de la estructura asociada a la entrada /proc
-            remove_proc_entry(item->name, multififo_dir);
             vfree(item->name);
             vfree(item); // Liberar memoria asociada al elemento de la lista
 

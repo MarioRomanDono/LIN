@@ -12,7 +12,7 @@ MODULE_LICENSE("GPL");
 #define MAX_KBUF 256
 
 static int max_entries = 5;
-static int max_size = 64;
+static int max_size = 256; // Cambiado aquí porque el tamaño del mensaje que envía chat.c es superior a 128 bytes
 static int entry_counter = 0;
 
 module_param(max_entries, int, 0000);
@@ -325,13 +325,13 @@ static int delete_proc_entry(char * name) {
     spin_lock(&sp);
 
     list_for_each_safe(pos, e, &entry_list){
-      item = list_entry(pos, struct list_item, links);
-      if (strcmp(name, item->name) == 0) {
-        encontrado = 1;
+        item = list_entry(pos, struct list_item, links);
+        if (strcmp(name, item->name) == 0) {
+            encontrado = 1;
 
-        entry = item->entry;
-        data = item->data;
-        list_del(pos);
+            entry = item->entry;
+            data = item->data;
+            list_del(pos);
 
         break;        
     }
@@ -344,10 +344,10 @@ static int delete_proc_entry(char * name) {
         return -ENOENT;
     }
 
+    remove_proc_entry(item->name, multififo_dir);
     kfifo_reset(&data->cbuffer);
     kfifo_free(&data->cbuffer);
     vfree(data); // Liberar memoria de la estructura asociada a la entrada /proc
-    remove_proc_entry(item->name, multififo_dir);
     vfree(item->name);
     vfree(item); // Liberar memoria asociada al elemento de la lista
 
@@ -477,10 +477,10 @@ void exit_fifoproc_module( void )
 
             spin_unlock(&sp);
 
+            remove_proc_entry(item->name, multififo_dir);
             kfifo_reset(&data->cbuffer);
             kfifo_free(&data->cbuffer);
             vfree(data);// Liberar memoria de la estructura asociada a la entrada /proc
-            remove_proc_entry(item->name, multififo_dir);
             vfree(item->name);
             vfree(item); // Liberar memoria asociada al elemento de la lista
 
