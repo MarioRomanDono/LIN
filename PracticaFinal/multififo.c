@@ -10,7 +10,7 @@ MODULE_LICENSE("GPL");
 #define MAX_KBUF 256
 
 static int max_entries = 5;
-static int max_size = 32;
+static int max_size = 64;
 static int entry_counter = 0;
 
 module_param(max_entries, int, 0000);
@@ -73,7 +73,7 @@ static int fifoproc_open(struct inode * inode, struct file * file) {
         }
     }
     else { //Productor
-        private_data->cons_count++;
+        private_data->prod_count++;
 
         if (private_data->nr_cons_waiting > 0) {
           up(&private_data->sem_cons);
@@ -94,7 +94,7 @@ static int fifoproc_open(struct inode * inode, struct file * file) {
             if (down_interruptible(&private_data->mtx)) {
                 return -EINTR;
             }
-            }
+        }
     }
 
     up(&private_data->mtx);
@@ -330,7 +330,7 @@ static int delete_proc_entry(char * name) {
 
     if (!encontrado) {
         printk(KERN_INFO "fifoproc: Entry %s not found\n", name);
-        return -EINVAL;
+        return -ENOENT;
     }
 
     kfifo_reset(&data->cbuffer);
